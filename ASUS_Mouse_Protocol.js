@@ -29,7 +29,8 @@ export class AsusMouse {
 				DPISupport: false,
 				AngleSnapSupport: false,
 				PollingRateSupport: false,
-			}
+			},
+			lastRGBData: null,
 		};
 	}
 
@@ -144,6 +145,10 @@ export class AsusMouse {
 			RGBData[iLedIdx+1] = color[1];
 			RGBData[iLedIdx+2] = color[2];
 		}
+
+		const key = RGBData.join(",");
+		if (!overrideColor && key === this.Config.lastRGBData) return;
+		this.Config.lastRGBData = key;
 
 		device.write([0x03, 0x51, 0x29, 0xff, 0x00, 0x00].concat(RGBData), 64);
 	}

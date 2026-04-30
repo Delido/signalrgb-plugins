@@ -47,6 +47,7 @@ export class AsusKeyboard{
 			Leds: [],
 			LedNames: [],
 			LedPositions: [],
+			lastRGBData: null,
 		};
 	}
 
@@ -137,6 +138,10 @@ export class AsusKeyboard{
 			RGBData[iIdx * 4 + 2] = color[1];
 			RGBData[iIdx * 4 + 3] = color[2];
 		}
+
+		const key = RGBData.join(",");
+		if (!overrideColor && key === this.Config.lastRGBData) return;
+		this.Config.lastRGBData = key;
 
 		while (TotalLedCount > 0) {
 			const ledsPerPacket = 14;
