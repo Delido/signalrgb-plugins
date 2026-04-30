@@ -75,7 +75,7 @@ export class CORSAIR_Device_Protocol {
 			LedPositions: [],
 			Leds: [],
 			Wireless: false,
-			pollingInterval: 10000, // active poll fallback only — primary path is passive read of unsolicited reports
+			pollingInterval: 300, // Consumer Control endpoint handles real-time events; polling is just a fallback
 			lastMicStatePolling: 0,
 			lastMicState: 0,
 			lastBatteryPolling: 0,
@@ -261,46 +261,41 @@ export class CORSAIR_Device_Protocol {
 
 	fetchMicStatus(){
 
+		// Throttled polling via iCUE protocol
+		if(Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
+			return this.Config.lastMicState;
+		}
+
+		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
+		const micreadMode = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 		const endpoint = this.getDeviceEndpoint();
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
 
-		// Passive listening: the device pushes [01 01 02 00 muteState ...] reports
-		// ~every second on its own AND instantly on button press. We just drain
-		// whatever's pending — no write, no clearReadBuffer, so we don't keep
-		// the radio link hot and we don't race with other flows' reads.
-		const unsolicitedFilter = [0x01, 0x01, 0x02, 0x00, 0x00];
-		for (let i = 0; i < 4; i++) {
-			const report = device.read(unsolicitedFilter, 64);
-			if (device.getLastReadSize() <= 0) break;
-			if (report[0] === 0x01 && report[2] === 0x02 && report[3] === 0x00) {
-				this.Config.lastMicState = report[4]; // newest report wins
+		const micStatusPacket = [0x02, headsetMode, 0x02, micreadMode, 0x00];
+
+		device.pause(30);
+		device.clearReadBuffer();
+		device.write(micStatusPacket, 64);
+		device.pause(60);
+		this.Config.lastMicStatePolling = Date.now();
+
+		// The device pushes unsolicited status reports [01 01 02 00 muteState ...] ~every second.
+		// These arrive before our explicit response and carry the same mute state in b4.
+		// Read whatever arrived: prefer explicit response (b3=register), accept unsolicited as fallback.
+		const micStatus = device.read(micStatusPacket, 64);
+		let muteValue = null;
+
+		if (device.getLastReadSize() > 0) {
+			if (micStatus[3] === micreadMode) {
+				muteValue = micStatus[4]; // explicit response — authoritative
+			} else if (micStatus[0] === 0x01 && micStatus[2] === 0x02 && micStatus[3] === 0x00) {
+				muteValue = micStatus[4]; // unsolicited status report — reliable fallback
 			}
 		}
 
-		// Active fallback every 10s — covers the rare case that no unsolicited
-		// report arrived (just-woke headset, plugin reload, missed packet).
-		const now = Date.now();
-		if (now - this.Config.lastMicStatePolling >= this.Config.pollingInterval) {
-			const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
-			const micreadMode = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
-			const micStatusPacket = [0x02, headsetMode, 0x02, micreadMode, 0x00];
-
-			device.pause(30);
-			device.clearReadBuffer();
-			device.write(micStatusPacket, 64);
-			device.pause(60);
-			this.Config.lastMicStatePolling = now;
-
-			const micStatus = device.read(micStatusPacket, 64);
-			if (device.getLastReadSize() > 0) {
-				if (micStatus[3] === micreadMode) {
-					this.Config.lastMicState = micStatus[4];
-				} else if (micStatus[0] === 0x01 && micStatus[2] === 0x02 && micStatus[3] === 0x00) {
-					this.Config.lastMicState = micStatus[4];
-				}
-			}
+		if (muteValue !== null) {
+			this.Config.lastMicState = muteValue;
 		}
-
 		return this.Config.lastMicState;
 
 	}
