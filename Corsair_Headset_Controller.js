@@ -85,6 +85,7 @@ export class CORSAIR_Device_Protocol {
 			isSleeping: false,
 			softwareModeActive: false,
 			lastBatteryRetry: 0,
+			lastRGBData: null,
 		};
 
 		this.chargingStates = Object.freeze({
@@ -240,6 +241,10 @@ export class CORSAIR_Device_Protocol {
 			RGBData[(deviceLeds[iIdx])+3] = color[1];
 			RGBData[(deviceLeds[iIdx])+6] = color[2];
 		}
+
+		const key = RGBData.join(",");
+		if (!overrideColor && key === this.Config.lastRGBData) return;
+		this.Config.lastRGBData = key;
 
 		this.writeRGB(RGBData);
 	}
