@@ -8,7 +8,7 @@ A collection of custom device plugins for [SignalRGB](https://www.signalrgb.com/
 ## Included Plugins
 
 | Plugin | Device Type | Protocol |
-|--------|-------------|----------|
+| ------ | ----------- | -------- |
 | `ASUS_Keyboard_Protocol.js` | ASUS Keyboards | USB HID |
 | `ASUS_Mouse_Protocol.js` | ASUS Mice | USB HID |
 | `ASUS_Omni_Device.js` | ASUS Combo Devices (Keyboard + Mouse) | USB HID |
@@ -24,10 +24,28 @@ Only use `Asus_Ampere_Lovelace_GPU.js` if you know exactly what you are doing.
 
 ## Installation
 
-1. Copy the desired `.js` plugin file(s) into your SignalRGB plugins directory:
-   - Default path: `%DOCUMENTS%\WhirlwindFX\Plugins`
-2. Restart SignalRGB or click **Reload Plugins** in the settings.
-3. Your device should now appear under **Devices**.
+### Option 1: GitHub Repo direkt in SignalRGB einbinden (empfohlen)
+
+SignalRGB unterstützt das direkte Einbinden von GitHub-Repositories als Plugin-Quelle:
+
+1. Öffne SignalRGB und gehe zu **Settings** → **Plugins**
+2. Klicke auf **Add Plugin Repository**
+3. Gib folgende URL ein:
+
+   ```text
+   https://github.com/Delido/signalrgb-plugins
+   ```
+
+4. Klicke auf **Add** und dann **Reload Plugins**
+5. Die Plugins erscheinen nun in der Plugin-Liste und erhalten automatisch Updates.
+
+### Option 2: Manuelle Installation
+
+1. Lade die gewünschte `.js` Datei aus diesem Repository herunter.
+2. Kopiere sie in das SignalRGB-Plugin-Verzeichnis:
+   - Standard-Pfad: `%DOCUMENTS%\WhirlwindFX\Plugins`
+3. Starte SignalRGB neu oder klicke in den Einstellungen auf **Reload Plugins**.
+4. Dein Gerät erscheint nun unter **Devices**.
 
 ## Compatibility
 
