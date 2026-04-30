@@ -85,6 +85,9 @@ export class CORSAIR_Device_Protocol {
 			isSleeping: false,
 			softwareModeActive: false,
 			lastBatteryRetry: 0,
+			lastRGBData: null,
+			lastRGBSentAt: 0,
+			rgbHeartbeatMs: 1000, // force a refresh write at least this often even when colors are unchanged
 		};
 
 		this.chargingStates = Object.freeze({
@@ -240,6 +243,13 @@ export class CORSAIR_Device_Protocol {
 			RGBData[(deviceLeds[iIdx])+3] = color[1];
 			RGBData[(deviceLeds[iIdx])+6] = color[2];
 		}
+
+		const key = RGBData.join(",");
+		const now = Date.now();
+		const heartbeatDue = (now - this.Config.lastRGBSentAt) >= this.Config.rgbHeartbeatMs;
+		if (!overrideColor && !heartbeatDue && key === this.Config.lastRGBData) return;
+		this.Config.lastRGBData = key;
+		this.Config.lastRGBSentAt = now;
 
 		this.writeRGB(RGBData);
 	}
