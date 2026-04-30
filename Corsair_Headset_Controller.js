@@ -267,31 +267,25 @@ export class CORSAIR_Device_Protocol {
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
 
 		const micStatusPacket = [0x02, headsetMode, 0x02, micreadMode, 0x00];
-		let muteValue = null;
-
-		// Drain any pending unsolicited status reports first — the device pushes
-		// [01 01 02 00 muteState ...] immediately after a button press. Throwing
-		// these away via clearReadBuffer() caused intermittent stale reads.
-		for (let i = 0; i < 8; i++) {
-			const pending = device.read([], 64);
-			if (device.getLastReadSize() <= 0) break;
-			if (pending[0] === 0x01 && pending[2] === 0x02 && pending[3] === 0x00) {
-				muteValue = pending[4]; // latest unsolicited report wins
-			}
-		}
 
 		device.pause(30);
+		device.clearReadBuffer();
 		device.write(micStatusPacket, 64);
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		// Read explicit response — authoritative if it arrives.
-		const micStatus = device.read(micStatusPacket, 64);
-		if (device.getLastReadSize() > 0) {
+		// Read up to a few packets in case unsolicited status reports arrive
+		// before our explicit response. Prefer the explicit response (b3=micreadMode);
+		// fall back to unsolicited reports [01 01 02 00 muteState ...] if needed.
+		let muteValue = null;
+		for (let i = 0; i < 4; i++) {
+			const micStatus = device.read(micStatusPacket, 64);
+			if (device.getLastReadSize() <= 0) break;
 			if (micStatus[3] === micreadMode) {
-				muteValue = micStatus[4]; // explicit response overrides unsolicited
+				muteValue = micStatus[4]; // explicit response — authoritative, stop
+				break;
 			} else if (micStatus[0] === 0x01 && micStatus[2] === 0x02 && micStatus[3] === 0x00) {
-				muteValue = micStatus[4]; // another unsolicited report — accept it
+				muteValue = micStatus[4]; // unsolicited fallback — keep reading for explicit
 			}
 		}
 
