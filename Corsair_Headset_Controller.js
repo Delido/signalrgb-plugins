@@ -75,7 +75,7 @@ export class CORSAIR_Device_Protocol {
 			LedPositions: [],
 			Leds: [],
 			Wireless: false,
-			pollingInterval: 200, // Consumer Control endpoint handles real-time events; polling is just a fallback
+			pollingInterval: 1000, // Consumer Control endpoint handles real-time events; polling is just a fallback
 			lastMicStatePolling: 0,
 			lastMicState: 0,
 			lastBatteryPolling: 0,
@@ -274,18 +274,17 @@ export class CORSAIR_Device_Protocol {
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		// Read up to a few packets in case unsolicited status reports arrive
-		// before our explicit response. Prefer the explicit response (b3=micreadMode);
-		// fall back to unsolicited reports [01 01 02 00 muteState ...] if needed.
+		// The device pushes unsolicited status reports [01 01 02 00 muteState ...] ~every second.
+		// These arrive before our explicit response and carry the same mute state in b4.
+		// Read whatever arrived: prefer explicit response (b3=register), accept unsolicited as fallback.
+		const micStatus = device.read(micStatusPacket, 64);
 		let muteValue = null;
-		for (let i = 0; i < 4; i++) {
-			const micStatus = device.read(micStatusPacket, 64);
-			if (device.getLastReadSize() <= 0) break;
+
+		if (device.getLastReadSize() > 0) {
 			if (micStatus[3] === micreadMode) {
-				muteValue = micStatus[4]; // explicit response — authoritative, stop
-				break;
+				muteValue = micStatus[4]; // explicit response — authoritative
 			} else if (micStatus[0] === 0x01 && micStatus[2] === 0x02 && micStatus[3] === 0x00) {
-				muteValue = micStatus[4]; // unsolicited fallback — keep reading for explicit
+				muteValue = micStatus[4]; // unsolicited status report — reliable fallback
 			}
 		}
 
