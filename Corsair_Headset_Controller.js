@@ -75,7 +75,7 @@ export class CORSAIR_Device_Protocol {
 			LedPositions: [],
 			Leds: [],
 			Wireless: false,
-			pollingInterval: 1000, // Consumer Control endpoint handles real-time events; polling is just a fallback
+			pollingInterval: 200, // Consumer Control endpoint handles real-time events; polling is just a fallback
 			lastMicStatePolling: 0,
 			lastMicState: 0,
 			lastBatteryPolling: 0,
