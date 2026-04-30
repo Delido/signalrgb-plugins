@@ -14,6 +14,7 @@ micLedMode:readonly
 micMuteColor:readonly
 idleTimeout:readonly
 SidetoneAmount:readonly
+powerSaverTest:readonly
 */
 export function ControllableParameters() {
 	return [
@@ -22,6 +23,7 @@ export function ControllableParameters() {
 		{property:"micLedMode", group:"lighting", label:"Microphone LED Mode", description: "Sets the microphone LED behavior", type:"combobox", values:["Canvas", "MuteState"], default:"Canvas"},
 		{property:"micMuteColor", group:"lighting", label:"Microphone Mute Color", description: "Sets the microphone LED color when on mute while 'Microphone LED Mode' is set to 'MuteState'", min:"0", max:"360", type:"color", default:"#ff0000"},
 		{property:"SidetoneAmount", group:"", label:"Sidetone", description: "Sets the sidetone level amount", step:"1", type:"number", min:"0", max:"100", default:"0", live : false}, // Looks like not all models works with this, disabling for now, looks like to not be used that much
+		{property:"powerSaverTest", group:"", label:"Power Saver Test Mode", description: "Skips RGB writes and mic-status polling so you can measure baseline battery drain. Battery readings stay active. LEDs freeze on whatever was last sent.", type:"combobox", values:["Off", "On"], default:"Off"},
 	];
 }
 
@@ -30,16 +32,18 @@ export function Initialize() {
 }
 
 export function Render() {
+	const testMode = powerSaverTest === "On";
+
 	if (CORSAIR.getWirelessSupport()){
 
 		CORSAIR.fetchStatus();
 
 		if (!CORSAIR.Config.isSleeping){
-			CORSAIR.sendColors();
+			if (!testMode) CORSAIR.sendColors();
 			CORSAIR.fetchBattery();
 		}
 	} else {
-		CORSAIR.sendColors();
+		if (!testMode) CORSAIR.sendColors();
 	}
 }
 
