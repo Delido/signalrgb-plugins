@@ -14,6 +14,7 @@ micLedMode:readonly
 micMuteColor:readonly
 idleTimeout:readonly
 SidetoneAmount:readonly
+lowBatteryThreshold:readonly
 */
 export function ControllableParameters() {
 	return [
@@ -22,6 +23,7 @@ export function ControllableParameters() {
 		{property:"micLedMode", group:"lighting", label:"Microphone LED Mode", description: "Sets the microphone LED behavior", type:"combobox", values:["Canvas", "MuteState"], default:"Canvas"},
 		{property:"micMuteColor", group:"lighting", label:"Microphone Mute Color", description: "Sets the microphone LED color when on mute while 'Microphone LED Mode' is set to 'MuteState'", min:"0", max:"360", type:"color", default:"#ff0000"},
 		{property:"SidetoneAmount", group:"", label:"Sidetone", description: "Sets the sidetone level amount", step:"1", type:"number", min:"0", max:"100", default:"0", live : false}, // Looks like not all models works with this, disabling for now, looks like to not be used that much
+		{property:"lowBatteryThreshold", group:"", label:"Low Battery LED Cutoff (%)", description: "Below this battery level the LEDs are switched off and RGB writes stop until the battery rises above the threshold again. Battery readings keep working. Set to 0 to disable.", type:"number", min:"0", max:"100", step:"1", default:"15", live: false},
 	];
 }
 
@@ -35,8 +37,25 @@ export function Render() {
 		CORSAIR.fetchStatus();
 
 		if (!CORSAIR.Config.isSleeping){
-			CORSAIR.sendColors();
 			CORSAIR.fetchBattery();
+
+			const lvl = CORSAIR.Config.lastBatteryLevel;
+			const threshold = parseInt(lowBatteryThreshold, 10) || 0;
+			const lowBattery = lvl !== null && threshold > 0 && lvl < threshold;
+
+			if (lowBattery) {
+				if (!CORSAIR.Config.inLowBatteryMode) {
+					device.log(`[LowBattery] Battery ${lvl}% < threshold ${threshold}% — disabling LEDs`);
+					CORSAIR.sendColors("#000000");
+					CORSAIR.Config.inLowBatteryMode = true;
+				}
+			} else {
+				if (CORSAIR.Config.inLowBatteryMode) {
+					device.log(`[LowBattery] Battery ${lvl}% — re-enabling LEDs`);
+					CORSAIR.Config.inLowBatteryMode = false;
+				}
+				CORSAIR.sendColors();
+			}
 		}
 	} else {
 		CORSAIR.sendColors();
@@ -85,6 +104,8 @@ export class CORSAIR_Device_Protocol {
 			isSleeping: false,
 			softwareModeActive: false,
 			lastBatteryRetry: 0,
+			lastBatteryLevel: null,
+			inLowBatteryMode: false,
 			lastRGBData: null,
 			lastRGBSentAt: 0,
 			rgbHeartbeatMs: 1000, // force a refresh write at least this often even when colors are unchanged
@@ -390,6 +411,7 @@ export class CORSAIR_Device_Protocol {
 		device.log(`Battery Level is [${batteryLevelPct}%]`);
 		device.log(`Battery Status is [${this.chargingStates[batteryStatus]}]`);
 
+		this.Config.lastBatteryLevel = batteryLevelPct;
 		battery.setBatteryLevel(batteryLevelPct);
 		battery.setBatteryState(batteryStateVal);
 	}
