@@ -40,8 +40,10 @@ export function Render() {
 			CORSAIR.fetchBattery();
 
 			const lvl = CORSAIR.Config.lastBatteryLevel;
+			const status = CORSAIR.Config.lastBatteryStatus;
 			const threshold = parseInt(lowBatteryThreshold, 10) || 0;
-			const lowBattery = lvl !== null && threshold > 0 && lvl < threshold;
+			const isCharging = status === 1 || status === 3; // 1=Charging, 3=Fully Charged
+			const lowBattery = lvl !== null && threshold > 0 && lvl < threshold && !isCharging;
 
 			if (lowBattery) {
 				if (!CORSAIR.Config.inLowBatteryMode) {
@@ -105,6 +107,7 @@ export class CORSAIR_Device_Protocol {
 			softwareModeActive: false,
 			lastBatteryRetry: 0,
 			lastBatteryLevel: null,
+			lastBatteryStatus: null, // raw status: 1=Charging, 2=Discharging, 3=Fully Charged
 			inLowBatteryMode: false,
 			lastRGBData: null,
 			lastRGBSentAt: 0,
@@ -412,6 +415,7 @@ export class CORSAIR_Device_Protocol {
 		device.log(`Battery Status is [${this.chargingStates[batteryStatus]}]`);
 
 		this.Config.lastBatteryLevel = batteryLevelPct;
+		this.Config.lastBatteryStatus = batteryStatus;
 		battery.setBatteryLevel(batteryLevelPct);
 		battery.setBatteryState(batteryStateVal);
 	}
