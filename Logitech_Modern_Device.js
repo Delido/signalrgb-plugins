@@ -2468,17 +2468,10 @@ export class LogitechMouseDevice {
 				delayByte = Math.floor(delay / 10);
 			}
 
-			// Connection-mode-aware addressing.
-			// Wireless: device index 0x01, SWID 'b' for ON, 'c' for OFF (matches captured G HUB pattern).
-			// Wired:    device index 0xFF, SWID 'e' for both ON and OFF (matches cable-init capture).
+			// SWID always 'b' for ON, 'c' for OFF — matches G HUB's captured wireless pattern.
+			// Device-index tracks the current connection (0x01 wireless, 0xFF cable).
 			const devIdx = Logitech.GetConnectionMode();
-			const isWired = devIdx === Logitech.ConnectionType["Wired"];
-			let funcByte;
-			if (isWired) {
-				funcByte = 0x2E;
-			} else {
-				funcByte = isOff ? 0x2C : 0x2B;
-			}
+			const funcByte = isOff ? 0x2C : 0x2B;
 
 			const packet = [0x10, devIdx, 0x0B, funcByte, delayByte, 0x00, 0x00];
 			device.set_endpoint(
@@ -2488,7 +2481,7 @@ export class LogitechMouseDevice {
 			);
 			device.write(packet, packet.length);
 			device.pause(50);
-			device.log(`BHOP Mode set to ${delay}ms (${isWired ? "wired" : "wireless"})`);
+			device.log(`BHOP Mode set to ${delay}ms (devIdx 0x${devIdx.toString(16)})`);
 		}
 	}
 	/** Set Trigger Force + Click Haptic for the Superstrike inductive switches.
@@ -2518,10 +2511,8 @@ export class LogitechMouseDevice {
 		const hapticMap = { "Off": 0x00, "Level 1": 0x04, "Level 2": 0x08, "Level 3": 0x0C, "Level 4": 0x10, "Level 5": 0x14 };
 		const hapticByte = hapticMap[chProp.value] ?? 0x00;
 
-		// Connection-mode-aware addressing. SWID matches connection: 'b' wireless, 'e' wired.
+		// SWID always 'b' for user setting changes; device-index tracks connection mode.
 		const devIdx = Logitech.GetConnectionMode();
-		const isWired = devIdx === Logitech.ConnectionType["Wired"];
-		const funcByte = isWired ? 0x1E : 0x1B;
 
 		device.set_endpoint(
 			Logitech.GetDeviceEndpoint("interface"),
@@ -2531,14 +2522,14 @@ export class LogitechMouseDevice {
 
 		for (const side of [0x00, 0x01]) {
 			const packet = [
-				0x11, devIdx, 0x0C, funcByte,
+				0x11, devIdx, 0x0C, 0x1B,
 				side, pressureByte, 0x08, hapticByte,
 				...new Array(12).fill(0x00)
 			];
 			device.write(packet, packet.length);
 			device.pause(20);
 		}
-		device.log(`Trigger Force = Lvl ${tfLevel}, Click Haptic = ${chProp.value} (${isWired ? "wired" : "wireless"})`);
+		device.log(`Trigger Force = Lvl ${tfLevel}, Click Haptic = ${chProp.value} (devIdx 0x${devIdx.toString(16)})`);
 	}
 	/** Set the Current Software DPI based on a callback from the DPIHandler. */
 	setDpi(dpi, stage = 0) {
@@ -2547,21 +2538,17 @@ export class LogitechMouseDevice {
 
 		if (isSuperstrike) {
 			// Captured G HUB encoding for the Superstrike. Three packets:
-			//   1. set DPI value (function 6, X+Y as 16-bit BE, trailing 0x02)
-			//   2. save to stage (function 7 with stage index 1..5)
-			//   3. apply trigger (short packet, function 3)
+			//   1. set DPI value (0x09 0x6B, X+Y as 16-bit BE, trailing 0x02)
+			//   2. save to stage (0x09 0x7B with stage index 1..5)
+			//   3. apply trigger (short 0x0D 0x3B 0x05)
 			//
-			// Connection-mode-aware: SWID 'b' on wireless (function bytes 0x6B/0x7B/0x3B),
-			// SWID 'e' on wired (0x6E/0x7E/0x3E). Device index switches between 0x01 and 0xFF.
+			// SWID is always 'b' for user setting changes (verified in cable_dpi capture
+			// device idx 0xFF still uses SWID b). Only the device-index byte tracks the
+			// connection mode (0x01 wireless, 0xFF cable direct).
 			const hi = (dpi >> 8) & 0xFF;
 			const lo =  dpi       & 0xFF;
 			const stageByte = (stage >= 1 && stage <= 5) ? stage : 0x01;
-
 			const devIdx = Logitech.GetConnectionMode();
-			const isWired = devIdx === Logitech.ConnectionType["Wired"];
-			const f6 = isWired ? 0x6E : 0x6B;
-			const f7 = isWired ? 0x7E : 0x7B;
-			const f3 = isWired ? 0x3E : 0x3B;
 
 			device.set_endpoint(
 				Logitech.GetDeviceEndpoint("interface"),
@@ -2569,13 +2556,13 @@ export class LogitechMouseDevice {
 				0xff00
 			);
 			device.write([
-				0x11, devIdx, 0x09, f6, 0x00,
+				0x11, devIdx, 0x09, 0x6B, 0x00,
 				hi, lo, hi, lo, 0x02,
 				...new Array(10).fill(0x00)
 			], 20);
 			device.pause(20);
 			device.write([
-				0x11, devIdx, 0x09, f7, 0x00,
+				0x11, devIdx, 0x09, 0x7B, 0x00,
 				stageByte,
 				...new Array(13).fill(0x00)
 			], 20);
@@ -2586,10 +2573,10 @@ export class LogitechMouseDevice {
 				Logitech.MessageTypeEndpoints.ShortMessageEndpoint,
 				0xff00
 			);
-			device.write([0x10, devIdx, 0x0D, f3, 0x05, 0x00, 0x00], 7);
+			device.write([0x10, devIdx, 0x0D, 0x3B, 0x05, 0x00, 0x00], 7);
 			device.pause(20);
 
-			device.log(`DPI: ${dpi} set to Stage: ${stageByte} (${isWired ? "wired" : "wireless"})`);
+			device.log(`DPI: ${dpi} set to Stage: ${stageByte} (devIdx 0x${devIdx.toString(16)})`);
 			return;
 		}
 

@@ -32,19 +32,20 @@ Long report (20 bytes total):
 
 `DEV_IDX` is `0x01` for the Lightspeed mouse. The function byte's high nibble is the function ID, the low nibble is the SoftwareID (echo tag).
 
-### SWID and Device Index follow connection state
+### Device Index follows connection state, SWID does not
 
-The Superstrike addresses commands differently depending on **how the host is talking to it**:
+The Device-Index byte tracks how the host reaches the mouse: `0x01` for the Lightspeed wireless device behind the dongle, `0xFF` for the mouse plugged in directly via USB. The plugin picks the right value at write time using `Logitech.GetConnectionMode()`.
 
-| Scenario | Device Index | SWID nibble | Example function bytes |
-|----------|--------------|-------------|------------------------|
-| Wireless connected, wireless setting | `0x01` | `b` | `6B`, `7B`, `3B`, `1B`, `2B` |
-| Wireless connected, **cable** setting | `0x01` | `c` | `6C`, `7C`, `3C` |
-| **Cable connected** (any setting) | `0xFF` | `e` | `6E`, `7E`, `3E`, `1E`, `2E` |
+**SWID** is a separate matter. For most user-triggered setting changes G HUB uses SWID `b` regardless of connection — verified from `cable_dpi_stage1_10200.pcapng` where the cable-connected mouse (devIdx `0xFF`) still receives `09 6b`, `09 7b`, `0d 3b` packets. The exceptions:
 
-The plugin picks the right Device Index + SWID at write time using `Logitech.GetConnectionMode()`. The third row (`0xFF` / `e`) was discovered from `dumps/gpx2_superstrike/init_with_cable.pcapng` and unblocks settings working when the mouse is plugged in via USB.
+| Scenario | SWID | Example function bytes |
+|----------|------|------------------------|
+| User setting change (any feature, any connection) | `b` | `6B`, `7B`, `3B`, `1B`, `2B` |
+| BHOP **off** specifically (wireless capture) | `c` | `2C` |
+| Cable polling-rate written while on wireless | `c` | `6C`, `7C`, `3C` |
+| G HUB internal init / probe traffic on cable | `e` | `6E`, `7E`, `3E`, `1E`, `2E`, `5E` |
 
-The cable-rate-while-on-wireless trick (row 2) lets G HUB write the USB-rate register even when no cable is plugged — both rates are stored independently in the firmware.
+The `e`-SWID packets that show up in `init_with_cable.pcapng` belong to G HUB's startup discovery, not user-driven configuration. The plugin therefore always sends SWID `b` for user changes (with the BHOP-off exception preserved to match the captured wireless pattern), and only swaps the device-index byte when the connection changes.
 
 ## Confirmed Settings
 
