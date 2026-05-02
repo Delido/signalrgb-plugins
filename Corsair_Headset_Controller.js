@@ -311,28 +311,19 @@ export class CORSAIR_Device_Protocol {
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		// Drain up to 8 packets — anything that queued since the last poll plus
-		// our explicit response. Filter strictly on the mic register so battery /
-		// software-mode responses from elsewhere are ignored if they slipped in.
-		// Two formats both update state, most recent value wins:
-		//   Explicit response : [01 ?? 02 <register> <value> ...]    value at byte 4
-		//   Unsolicited event : [03 01 01 <register> 00 <value> ...] value at byte 5
-		const drainLog = [];
+		// Drain up to 8 packets. Verified format from live diagnostics:
+		//   Mic poll response : [01 01 02 00 <value> 00 ...]   value at byte 4
+		//   RGB ack            : [01 01 06 00 00 ...]           ignored (byte 2 = 0x06)
+		// We accept the mic-poll response if byte 0=0x01, byte 1=0x01, byte 2=0x02.
+		// Note: the 03 01 01 46 00 unsolicited events visible in Wireshark do not
+		// surface through device.read() in this plugin host — the active poll
+		// response is what we have to rely on. Polling cadence determines reaction.
 		for (let i = 0; i < 8; i++) {
 			const report = device.read(micStatusPacket, 64);
-			const size = device.getLastReadSize();
-			if (size <= 0) break;
-			drainLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
-			if (report[0] === 0x01 && report[3] === micRegister) {
+			if (device.getLastReadSize() <= 0) break;
+			if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
 				this.Config.lastMicState = report[4];
-			} else if (report[0] === 0x03 && report[2] === 0x01 && report[3] === micRegister) {
-				this.Config.lastMicState = report[5];
 			}
-		}
-		if (drainLog.length > 0) {
-			device.log(`[MicPoll] state=${this.Config.lastMicState} drained=${drainLog.length}: ${drainLog.join(" | ")}`);
-		} else {
-			device.log(`[MicPoll] state=${this.Config.lastMicState} drained=0 (no packets)`);
 		}
 
 		return this.Config.lastMicState;
