@@ -300,21 +300,27 @@ export class CORSAIR_Device_Protocol {
 
 		const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
 
+		// IMPORTANT: no clearReadBuffer() here. The headset pushes unsolicited
+		// mute-state events on every button press even when SignalRGB isn't
+		// running (verified by capture). Those events queue in the read buffer
+		// between our polls — clearing the buffer before the next poll would
+		// throw them away and we'd miss button presses that happened in the gap.
+
 		device.pause(30);
-		device.clearReadBuffer();
 		device.write(micStatusPacket, 64);
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		// Drain up to 4 packets — explicit response plus any unsolicited events
-		// that piled up since the last poll. Most recent value wins.
-		// Two formats:
-		//   Explicit response  : [01 ?? 02 <register> <value> ...]            value at byte 4
-		//   Unsolicited event  : [03 01 01 <register> 00 <value> ...]         value at byte 5
-		for (let i = 0; i < 4; i++) {
+		// Drain up to 8 packets — anything that queued since the last poll plus
+		// our explicit response. Filter strictly on the mic register so battery /
+		// software-mode responses from elsewhere are ignored if they slipped in.
+		// Two formats both update state, most recent value wins:
+		//   Explicit response : [01 ?? 02 <register> <value> ...]    value at byte 4
+		//   Unsolicited event : [03 01 01 <register> 00 <value> ...] value at byte 5
+		for (let i = 0; i < 8; i++) {
 			const report = device.read(micStatusPacket, 64);
 			if (device.getLastReadSize() <= 0) break;
-			if (report[3] === micRegister && report[0] === 0x01) {
+			if (report[0] === 0x01 && report[3] === micRegister) {
 				this.Config.lastMicState = report[4];
 			} else if (report[0] === 0x03 && report[2] === 0x01 && report[3] === micRegister) {
 				this.Config.lastMicState = report[5];
