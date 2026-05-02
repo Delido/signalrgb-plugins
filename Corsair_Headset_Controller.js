@@ -285,48 +285,20 @@ export class CORSAIR_Device_Protocol {
 
 	fetchMicStatus(){
 
+		// Throttled active poll. SignalRGB's device.read() never surfaces the
+		// 03 01 01 <register> 00 <value> unsolicited events the headset pushes
+		// on every button press (verified via diagnostic logging — passive reads
+		// only ever returned 01 01 06 00 RGB-write ACKs, never the 0x03 events
+		// that Wireshark clearly shows on the wire). The polling cadence is
+		// therefore the floor on mute-LED reaction time.
+		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
+			return this.Config.lastMicState;
+		}
+
 		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
 		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 		const endpoint = this.getDeviceEndpoint();
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
-
-		// === DIAGNOSTIC: passive-read attempt ===
-		// Try to drain whatever is in the IN buffer without sending a write first.
-		// If the headset's unsolicited 03 01 01 <register> 00 <value> events ever
-		// surface through device.read(), they would show up here. Each peek logs
-		// the first six bytes so we can see exactly what (if anything) comes back.
-		// Filter: pass an array shaped like the event itself; the host may use the
-		// first byte as a report-ID hint.
-		const eventFilter = [0x03, 0x01, 0x01, micRegister, 0x00, 0x00];
-		const passiveLog = [];
-		let passiveCaptured = false;
-		for (let i = 0; i < 4; i++) {
-			const report = device.read(eventFilter, 64);
-			const size = device.getLastReadSize();
-			if (size <= 0) break;
-			passiveLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
-			if (report[0] === 0x03 && report[2] === 0x01 && report[3] === micRegister) {
-				this.Config.lastMicState = report[5];
-				passiveCaptured = true;
-			} else if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
-				this.Config.lastMicState = report[4];
-				passiveCaptured = true;
-			}
-		}
-		if (passiveLog.length > 0) {
-			device.log(`[MicPoll-PASSIVE] captured=${passiveCaptured} state=${this.Config.lastMicState} drained=${passiveLog.length}: ${passiveLog.join(" | ")}`);
-		}
-
-		// Throttled active poll — only if the passive peek didn't already give us
-		// a fresh value. If passive listening works (passiveCaptured stays true
-		// across polls without active writes) we can drop the active path entirely.
-		if (passiveCaptured) {
-			this.Config.lastMicStatePolling = Date.now();
-			return this.Config.lastMicState;
-		}
-		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
-			return this.Config.lastMicState;
-		}
 
 		const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
 
@@ -335,19 +307,17 @@ export class CORSAIR_Device_Protocol {
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		const activeLog = [];
+		// Drain up to 8 packets. Verified format from live diagnostics:
+		//   Mic poll response : [01 01 02 00 <value> 00 ...]   value at byte 4
+		//   RGB ack            : [01 01 06 00 00 ...]           ignored (byte 2 = 0x06)
+		// Match on bytes 0,1,2 = 01 01 02 and read the value at byte 4.
 		for (let i = 0; i < 8; i++) {
 			const report = device.read(micStatusPacket, 64);
-			const size = device.getLastReadSize();
-			if (size <= 0) break;
-			activeLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
-			if (report[0] === 0x03 && report[2] === 0x01 && report[3] === micRegister) {
-				this.Config.lastMicState = report[5];
-			} else if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
+			if (device.getLastReadSize() <= 0) break;
+			if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
 				this.Config.lastMicState = report[4];
 			}
 		}
-		device.log(`[MicPoll-ACTIVE] state=${this.Config.lastMicState} drained=${activeLog.length}: ${activeLog.join(" | ")}`);
 
 		return this.Config.lastMicState;
 
