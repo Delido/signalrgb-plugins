@@ -2398,21 +2398,23 @@ export class LogitechMouseDevice {
 			this.SetDpiLightAlwaysOn(dpiLight);
 		}
 
+		// Superstrike: push the SignalRGB-side Trigger Force / Click Haptic values
+		// to the mouse so the UI and firmware state stay in sync after init.
+		// Must run BEFORE DPIHandler.update() — sending the haptic packets right
+		// after a DPI apply packet causes the firmware to drop the DPI change.
+		// (Verified: toggling Onboard Memory off→on→off reproduced this; without
+		// the haptic packets running afterwards the DPI took effect.)
+		const productId = device.productId();
+		if (productId === 0xC54D || productId === 0xC09B || productId === 0xC0A8) {
+			this.setTriggerSwitchState();
+			device.pause(50);
+		}
+
 		if (settingControl && !OnboardState) {
 			DPIHandler.setActiveControl(settingControl);
 			DPIHandler.update();
 		} else {
 			this.SetDPILights(3); //Fallback to set DPILights to full
-		}
-
-		// Superstrike: push the SignalRGB-side Trigger Force / Click Haptic values
-		// to the mouse so the UI and firmware state stay in sync after init.
-		// Without this the UI shows the SignalRGB defaults while the mouse keeps
-		// whatever G HUB last wrote — they only resync after the user touches a
-		// dropdown.
-		const productId = device.productId();
-		if (productId === 0xC54D || productId === 0xC09B || productId === 0xC0A8) {
-			this.setTriggerSwitchState();
 		}
 	}
 
