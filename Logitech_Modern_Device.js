@@ -2403,6 +2403,16 @@ export class LogitechMouseDevice {
 		} else {
 			this.SetDPILights(3); //Fallback to set DPILights to full
 		}
+
+		// Superstrike: push the SignalRGB-side Trigger Force / Click Haptic values
+		// to the mouse so the UI and firmware state stay in sync after init.
+		// Without this the UI shows the SignalRGB defaults while the mouse keeps
+		// whatever G HUB last wrote — they only resync after the user touches a
+		// dropdown.
+		const productId = device.productId();
+		if (productId === 0xC54D || productId === 0xC09B) {
+			this.setTriggerSwitchState();
+		}
 	}
 
 	/** Get Current LOD for new GEN Mouse */
@@ -2514,6 +2524,50 @@ export class LogitechMouseDevice {
 	}
 	/** Set the Current Software DPI based on a callback from the DPIHandler. */
 	setDpi(dpi, stage = 0) {
+		const productId = device.productId();
+		const isSuperstrike = productId === 0xC54D || productId === 0xC09B;
+
+		if (isSuperstrike) {
+			// Captured G HUB encoding for the Superstrike. The previous PRO X 2 path
+			// (function 0x6E with LOD trailer) never got the DPI to actually update;
+			// the firmware needs three packets:
+			//   1. set DPI value (function 0x6B, X+Y as 16-bit BE, trailing 0x02)
+			//   2. save to stage    (function 0x7B with stage index 1..5)
+			//   3. apply trigger    (short packet 0x0D 0x3B 0x05)
+			const hi = (dpi >> 8) & 0xFF;
+			const lo =  dpi       & 0xFF;
+			const stageByte = (stage >= 1 && stage <= 5) ? stage : 0x01;
+
+			device.set_endpoint(
+				Logitech.GetDeviceEndpoint("interface"),
+				Logitech.MessageTypeEndpoints.LongMessageEndpoint,
+				0xff00
+			);
+			device.write([
+				0x11, 0x01, 0x09, 0x6B, 0x00,
+				hi, lo, hi, lo, 0x02,
+				...new Array(10).fill(0x00)
+			], 20);
+			device.pause(20);
+			device.write([
+				0x11, 0x01, 0x09, 0x7B, 0x00,
+				stageByte,
+				...new Array(13).fill(0x00)
+			], 20);
+			device.pause(20);
+
+			device.set_endpoint(
+				Logitech.GetDeviceEndpoint("interface"),
+				Logitech.MessageTypeEndpoints.ShortMessageEndpoint,
+				0xff00
+			);
+			device.write([0x10, 0x01, 0x0D, 0x3B, 0x05, 0x00, 0x00], 7);
+			device.pause(20);
+
+			device.log(`DPI: ${dpi} set to Stage: ${stageByte}`);
+			return;
+		}
+
 		if (Logitech.Config.DeviceName.includes("PRO X 2")) {
 			const dpiLE = [(dpi >> 8) & 0xFF, dpi & 0xFF];
 
