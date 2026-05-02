@@ -32,11 +32,11 @@ export function ControllableParameters() {
 	const productId = device.productId();
 
 	// IDs für GPro X Superlight 2 (Wireless & Wired)
-	const isProX2 = productId === 0xC54D || productId === 0xC09B;
+	const isProX2 = productId === 0xC54D || productId === 0xC09B || productId === 0xC0A8;
 
 	const defaultPollingRates = ["1000", "500", "250", "125"];
 	const highPollingRates = ["8000", "4000", "2000", "1000", "500", "250", "125"];
-	const pollingValues = productId === 0xC54D ? highPollingRates : defaultPollingRates;
+	const pollingValues = (productId === 0xC54D || productId === 0xC0A8) ? highPollingRates : defaultPollingRates;
 	const params = [];
 	
 	// Nur anzeigen, wenn Gerät LEDs hat
@@ -499,7 +499,7 @@ export class LogitechDeviceLibrary {
 			0xc095, 0xc09d, 0xc332, 0xc33e, 0xc539, 0xc53a, 0xC547,
 			0xC541, 0xC545, 0xC343, 0xC348, 0xc359, 0xC096, 0x409D, 0xC347,
 			0xC352, 0x40B0, 0xC09E, 0xc548, 0xC356, 0xC357, 0xC355,
-			0xC099, 0xC09A, 0xC543, 0xC35B, 0xC351, 0xC54D, 0xC09B
+			0xC099, 0xC09A, 0xC543, 0xC35B, 0xC351, 0xC54D, 0xC09B, 0xC0A8
 		];
 
 		this.DeviceIDs =
@@ -540,6 +540,7 @@ export class LogitechDeviceLibrary {
 			"c09a": "GPro 2",
 			"c351": "PRO X 60",
 			"c09b": "GPro X Superlight 2", // wired
+			"c0a8": "G PRO X 2 Superstrike", // wired direct USB connection
 
 			//Wireless
 			"405d": "G403 Prodigy",
@@ -2410,7 +2411,7 @@ export class LogitechMouseDevice {
 		// whatever G HUB last wrote — they only resync after the user touches a
 		// dropdown.
 		const productId = device.productId();
-		if (productId === 0xC54D || productId === 0xC09B) {
+		if (productId === 0xC54D || productId === 0xC09B || productId === 0xC0A8) {
 			this.setTriggerSwitchState();
 		}
 	}
@@ -2500,9 +2501,11 @@ export class LogitechMouseDevice {
 	 *    HAPTIC   = Off=0x00, Level1..5 = 0x04..0x14 in steps of 4
 	 */
 	setTriggerSwitchState() {
-		// Superstrike-only feature (inductive switches). PIDs: 0xC54D wireless, 0xC09B wired.
+		// Superstrike-only feature (inductive switches).
+		// PIDs: 0xC54D Lightspeed dongle, 0xC0A8 wired direct USB.
+		// (0xC09B was a guess from existing plugin code that turned out to be a different device.)
 		const productId = device.productId();
-		if (productId !== 0xC54D && productId !== 0xC09B) return;
+		if (productId !== 0xC54D && productId !== 0xC09B && productId !== 0xC0A8) return;
 
 		const tfProp = device.getProperty(`triggerForce`);
 		const chProp = device.getProperty(`clickHaptic`);
@@ -2540,7 +2543,7 @@ export class LogitechMouseDevice {
 	/** Set the Current Software DPI based on a callback from the DPIHandler. */
 	setDpi(dpi, stage = 0) {
 		const productId = device.productId();
-		const isSuperstrike = productId === 0xC54D || productId === 0xC09B;
+		const isSuperstrike = productId === 0xC54D || productId === 0xC09B || productId === 0xC0A8;
 
 		if (isSuperstrike) {
 			// Captured G HUB encoding for the Superstrike. Three packets:

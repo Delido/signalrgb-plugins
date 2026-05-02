@@ -11,7 +11,7 @@ Reverse-engineering notes from Wireshark captures of G HUB → mouse traffic, us
 | Device | Logitech G PRO X 2 SUPERSTRIKE Lightspeed |
 | USB VID | `0x046D` (Logitech) |
 | USB PID (Lightspeed dongle) | `0xC54D` (wireless) |
-| USB PID (wired) | `0xC09B` *(not personally verified — pulled from existing plugin)* |
+| USB PID (wired direct USB) | `0xC0A8` *(captured from descriptor in `init_with_cable.pcapng`)* |
 | HID++ Transport PID | `0x40BD` (this is what `LogitechMouse.PingDevice()` returns) |
 | HID++ Device Index | `0x01` (single device behind the dongle) |
 | HID Interface | `2`, usage page `0xFF00`, usage `0x0001` (short) / `0x0002` (long) |
