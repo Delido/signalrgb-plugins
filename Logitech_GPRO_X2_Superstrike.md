@@ -32,14 +32,19 @@ Long report (20 bytes total):
 
 `DEV_IDX` is `0x01` for the Lightspeed mouse. The function byte's high nibble is the function ID, the low nibble is the SoftwareID (echo tag).
 
-### SWID matters for Superstrike
+### SWID and Device Index follow connection state
 
-The Superstrike encodes the **target connection mode** in the SWID nibble for polling-rate writes:
+The Superstrike addresses commands differently depending on **how the host is talking to it**:
 
-- SWID `b` (function bytes `6B`, `7B`, `3B`) → wireless register
-- SWID `c` (function bytes `6C`, `7C`, `3C`) → cable register
+| Scenario | Device Index | SWID nibble | Example function bytes |
+|----------|--------------|-------------|------------------------|
+| Wireless connected, wireless setting | `0x01` | `b` | `6B`, `7B`, `3B`, `1B`, `2B` |
+| Wireless connected, **cable** setting | `0x01` | `c` | `6C`, `7C`, `3C` |
+| **Cable connected** (any setting) | `0xFF` | `e` | `6E`, `7E`, `3E`, `1E`, `2E` |
 
-Both registers are independently addressable while connected wirelessly. G HUB writes the cable rate even when no cable is plugged in.
+The plugin picks the right Device Index + SWID at write time using `Logitech.GetConnectionMode()`. The third row (`0xFF` / `e`) was discovered from `dumps/gpx2_superstrike/init_with_cable.pcapng` and unblocks settings working when the mouse is plugged in via USB.
+
+The cable-rate-while-on-wireless trick (row 2) lets G HUB write the USB-rate register even when no cable is plugged — both rates are stored independently in the firmware.
 
 ## Confirmed Settings
 
