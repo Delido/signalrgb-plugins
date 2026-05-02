@@ -563,7 +563,8 @@ export class LogitechDeviceLibrary {
 			"40b6": "G915 X TKL",
 			"40a8": "GPro 2",
 			"40af": "PRO X 60",
-			"40a9": "GPro X Superlight 2" // wireless
+			"40a9": "GPro X Superlight 2", // wireless
+			"40bd": "G PRO X 2 Superstrike" // Lightspeed transport PID — name contains "PRO X 2" so the existing Pro-X-2 setting paths activate
 
 		};
 		/** @type {Object.<string, LedPosition[]>} */
@@ -1148,6 +1149,14 @@ export class LogitechDeviceLibrary {
 				image: "https://assets.signalrgb.com/devices/brands/logitech/mice/g-pro-2.png"
 			},
 			"GPro X Superlight 2": {
+				bodyStyle: "G200Body",
+				ledStyle: "Null",
+				maxDPI: "44000",
+				Size: [0, 0],
+				DeviceType: "Mouse",
+				image: "https://assets.signalrgb.com/devices/brands/logitech/mice/g-pro-x-superlight.png"
+			},
+			"G PRO X 2 Superstrike": {
 				bodyStyle: "G200Body",
 				ledStyle: "Null",
 				maxDPI: "44000",
