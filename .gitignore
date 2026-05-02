@@ -1,0 +1,6 @@
+# Internal: Wireshark dumps and reverse-engineering tooling.
+# Not part of the published plugins; kept locally for reference.
+dumps/
+
+# IDE/agent artifacts
+.claude/

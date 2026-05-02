@@ -25,6 +25,8 @@ dpiLight:readonly
 OnboardState:readonly
 dpiRollover:readonly
 pollingRate:readonly
+triggerForce:readonly
+clickHaptic:readonly
 */
 export function ControllableParameters() {
 	const productId = device.productId();
@@ -55,7 +57,10 @@ export function ControllableParameters() {
 		params.push(
 			{ "property": "lodMode", "group": "", "label": "LOD Rate", "description": "Controls how high you can lift the mouse before it stops working. Lower = more precise, Higher = more forgiving.", "type": "combobox", "values": ["Low", "Medium", "High"], "default": "Medium" },
 			{ "property": "bhopMode", "group": "", "label": "BHOP (ms)", "description": "The BHOP mode prevents unwanted jumps when the scroll wheel is accidentally triggered. When this option is enabled, the mouse ignores the first scroll event unless a second scroll event occurs within the time window defined on the slider.", "type": "combobox", "values": ["Off", "100", "200", "300", "400", "500", "600", "700", "800", "900", "1000"], "default": "Off" },
-			{ "property": "gameMode", "group": "", "label": "Gaming Mode", "description": "Optimizes sensor settings for specific surfaces: On (gamepads), Off (universal), or Auto (auto-detect)", "type": "combobox", "values": ["On", "Off","Auto"], "default": "On" }
+			{ "property": "gameMode", "group": "", "label": "Gaming Mode", "description": "Optimizes sensor settings for specific surfaces: On (gamepads), Off (universal), or Auto (auto-detect)", "type": "combobox", "values": ["On", "Off","Auto"], "default": "On" },
+			// Superstrike-only — inductive switch features. Settings apply to BOTH left and right buttons together (G HUB does the same).
+			{ "property": "triggerForce", "group": "", "label": "Trigger Force", "description": "Click actuation force for the inductive switches. Level 1 = lightest, Level 10 = stiffest.", "type": "combobox", "values": ["Level 1", "Level 2", "Level 3", "Level 4", "Level 5", "Level 6", "Level 7", "Level 8", "Level 9", "Level 10"], "default": "Level 5" },
+			{ "property": "clickHaptic", "group": "", "label": "Click Haptic", "description": "Haptic feedback intensity on click (inductive switches only).", "type": "combobox", "values": ["Off", "Level 1", "Level 2", "Level 3", "Level 4", "Level 5"], "default": "Off" }
 		);
 	}
 	return params;
@@ -198,6 +203,12 @@ export function onbhopModeChanged() {
 }
 export function ongameModeChanged() {
 	LogitechMouse.setGamingMode();
+}
+export function ontriggerForceChanged() {
+	LogitechMouse.setTriggerSwitchState();
+}
+export function onclickHapticChanged() {
+	LogitechMouse.setTriggerSwitchState();
 }
 export function onOnboardStateChanged() {
 
@@ -2449,6 +2460,48 @@ export class LogitechMouseDevice {
 			device.pause(50);
 			device.log(`BHOP Mode set to ${delay}ms`);
 		}
+	}
+	/** Set Trigger Force + Click Haptic for the Superstrike inductive switches.
+	 *  Both values share the same firmware register, so we always send both —
+	 *  if only one was changed the other gets re-applied with its current value.
+	 *  G HUB pushes the same packet twice with side=0 and side=1 (left + right).
+	 *  Captured encoding: 11 01 0c 1b [SIDE] [PRESSURE] 08 [HAPTIC] 00 ...
+	 *    SIDE     = 0x00 (left) | 0x01 (right)
+	 *    PRESSURE = Level (1..10) * 0x04   → 0x04..0x28
+	 *    HAPTIC   = Off=0x00, Level1..5 = 0x04..0x14 in steps of 4
+	 */
+	setTriggerSwitchState() {
+		// Superstrike-only feature (inductive switches). PIDs: 0xC54D wireless, 0xC09B wired.
+		const productId = device.productId();
+		if (productId !== 0xC54D && productId !== 0xC09B) return;
+
+		const tfProp = device.getProperty(`triggerForce`);
+		const chProp = device.getProperty(`clickHaptic`);
+		if (!tfProp || !chProp) return;
+
+		const tfMatch = /Level\s*(\d+)/i.exec(tfProp.value);
+		const tfLevel = tfMatch ? Math.max(1, Math.min(10, parseInt(tfMatch[1], 10))) : 5;
+		const pressureByte = tfLevel * 0x04;
+
+		const hapticMap = { "Off": 0x00, "Level 1": 0x04, "Level 2": 0x08, "Level 3": 0x0C, "Level 4": 0x10, "Level 5": 0x14 };
+		const hapticByte = hapticMap[chProp.value] ?? 0x00;
+
+		device.set_endpoint(
+			Logitech.GetDeviceEndpoint("interface"),
+			Logitech.MessageTypeEndpoints.LongMessageEndpoint,
+			0xff00
+		);
+
+		for (const side of [0x00, 0x01]) {
+			const packet = [
+				0x11, 0x01, 0x0C, 0x1B,
+				side, pressureByte, 0x08, hapticByte,
+				...new Array(12).fill(0x00)
+			];
+			device.write(packet, packet.length);
+			device.pause(20);
+		}
+		device.log(`Trigger Force = Lvl ${tfLevel}, Click Haptic = ${chProp.value}`);
 	}
 	/** Set the Current Software DPI based on a callback from the DPIHandler. */
 	setDpi(dpi, stage = 0) {

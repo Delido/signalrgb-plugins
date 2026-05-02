@@ -15,7 +15,7 @@ A collection of custom device plugins for [SignalRGB](https://www.signalrgb.com/
 | `Asus_Ampere_Lovelace_GPU.js` | ASUS GPUs (Ampere / Lovelace) | **SMBUS** ⚠️ |
 | `Corsair_Headset_Controller.js` | Corsair Headsets | USB HID |
 | `Corsair_Lighting_Commander_Core.js` | Corsair Commander Core | USB HID |
-| `Logitech_Modern_Device.js` | Logitech Devices | USB HID |
+| `Logitech_Modern_Device.js` | Logitech Devices (incl. G PRO X2 Superstrike Trigger Force + Click Haptic) | HID++ 2.0 |
 
 ### ⚠️ SMBUS Warning
 
