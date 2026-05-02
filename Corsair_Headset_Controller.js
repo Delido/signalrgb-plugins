@@ -317,14 +317,22 @@ export class CORSAIR_Device_Protocol {
 		// Two formats both update state, most recent value wins:
 		//   Explicit response : [01 ?? 02 <register> <value> ...]    value at byte 4
 		//   Unsolicited event : [03 01 01 <register> 00 <value> ...] value at byte 5
+		const drainLog = [];
 		for (let i = 0; i < 8; i++) {
 			const report = device.read(micStatusPacket, 64);
-			if (device.getLastReadSize() <= 0) break;
+			const size = device.getLastReadSize();
+			if (size <= 0) break;
+			drainLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
 			if (report[0] === 0x01 && report[3] === micRegister) {
 				this.Config.lastMicState = report[4];
 			} else if (report[0] === 0x03 && report[2] === 0x01 && report[3] === micRegister) {
 				this.Config.lastMicState = report[5];
 			}
+		}
+		if (drainLog.length > 0) {
+			device.log(`[MicPoll] state=${this.Config.lastMicState} drained=${drainLog.length}: ${drainLog.join(" | ")}`);
+		} else {
+			device.log(`[MicPoll] state=${this.Config.lastMicState} drained=0 (no packets)`);
 		}
 
 		return this.Config.lastMicState;
