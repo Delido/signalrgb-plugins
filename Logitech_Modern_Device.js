@@ -1163,7 +1163,7 @@ export class LogitechDeviceLibrary {
 				maxDPI: "44000",
 				Size: [0, 0],
 				DeviceType: "Mouse",
-				image: "https://assets.signalrgb.com/devices/brands/logitech/mice/g-pro-x-superlight.png"
+				image: "https://www.logitechg.com/content/dam/gaming/en/products/pro-x2-superstrike-pdp/2026/pro-x2-superstrike-top-angle-lifestyle-gallery-2.png"
 			},
 
 			// Keyboards
