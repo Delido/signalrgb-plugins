@@ -96,7 +96,7 @@ export class CORSAIR_Device_Protocol {
 			LedPositions: [],
 			Leds: [],
 			Wireless: false,
-			pollingInterval: 500, // active mic poll interval. Each poll also drains any queued unsolicited events.
+			pollingInterval: 10000, // safety-net active mic poll. Primary path is passive listening on the alt iCUE collection (0x0006) — events arrive within ~150ms of the button press.
 			lastMicStatePolling: 0,
 			lastMicState: 0,
 			lastBatteryPolling: 0,
@@ -289,37 +289,31 @@ export class CORSAIR_Device_Protocol {
 		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 		const endpoint = this.getDeviceEndpoint();
 
-		// === DIAGNOSTIC: passive peek on the OTHER iCUE collection ===
-		// Wireshark capture mic_on_off_2package_per_click.pcapng shows the
-		// headset emits 03 01 02 <state> ... button events on every click.
-		// Our normal endpoint is collection 0x0005 / usage 0x0001 — we never
-		// see those events there. Try collection 0x0006 / usage 0x0002 (also
-		// on usage_page 0xFF42) which is opened by the host but never used
-		// by the plugin.
+		// Primary path: passive listen on the alternate iCUE collection (0x0006 /
+		// usage 0x0002 / usage_page 0xff42). The headset pushes mute events there
+		// unsolicited within ~150ms of every button press. Verified live: events
+		// arrive in the form
+		//   03 01 02 <pressed>           — button transition (1 press, 0 release)
+		//   03 01 01 8e 00 <value>       — LED feedback echo
+		//   03 01 01 <register> 00 <V>   — authoritative mic register state
+		// We trust the register event (byte 3 == micRegister) and ignore the rest.
 		device.set_endpoint(endpoint[`interface`], 0x0002, 0xff42, 0x0006);
-		const altLog = [];
-		for (let i = 0; i < 4; i++) {
-			const report = device.read([0x03, 0x01, 0x02, 0x00, 0x00], 64);
-			const size = device.getLastReadSize();
-			if (size <= 0) break;
-			altLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
-			if (report[0] === 0x03 && report[1] === 0x01 && report[2] === 0x02) {
-				// Button event: byte 3 = 1 on press, 0 on release.
-				// Use rising edge (press) as a toggle trigger.
-				if (report[3] === 0x01) {
-					this.Config.lastMicState = this.Config.lastMicState === 0 ? 1 : 0;
-				}
+		for (let i = 0; i < 8; i++) {
+			const report = device.read([0x03, 0x01, 0x01, micRegister, 0x00], 64);
+			if (device.getLastReadSize() <= 0) break;
+			if (report[0] === 0x03 && report[1] === 0x01 && report[2] === 0x01 && report[3] === micRegister) {
+				this.Config.lastMicState = report[5];
+				this.Config.lastMicStatePolling = Date.now(); // reset cooldown — we know the state now
 			}
 		}
-		if (altLog.length > 0) {
-			device.log(`[MicPoll-COL6] state=${this.Config.lastMicState} drained=${altLog.length}: ${altLog.join(" | ")}`);
-		}
 
-		// Always switch back to the main iCUE collection before doing anything else.
+		// Switch back to the main iCUE collection for any subsequent reads/writes
+		// elsewhere in the same frame (RGB writes etc).
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
 
-		// Throttled active poll on the normal collection — confirms state in case
-		// the diagnostic above ever stops working or we missed a button edge.
+		// Safety-net active poll: only every 10s, and only if we haven't received
+		// an event since then. Catches edge cases like a missed event after wake
+		// or plugin reload before any button has been pressed.
 		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
 			return this.Config.lastMicState;
 		}
