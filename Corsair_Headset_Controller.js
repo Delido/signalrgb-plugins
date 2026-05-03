@@ -67,15 +67,17 @@ export function Render() {
 
 export function Shutdown(SystemSuspending) {
 
-	// if(SystemSuspending){
-	// 	// Go Dark on System Sleep/Shutdown
-	// 	CORSAIR.sendColors("#000000");
-	// }else{
+	if(SystemSuspending){
+		// Go Dark on System Sleep/Shutdown
+		CORSAIR.sendColors("#000000");
+	}else{
 		const headsetMode = CORSAIR.getWirelessSupport() === true ? 0x09 : 0x08;
 		const ep = CORSAIR.getDeviceEndpoint();
 		device.set_endpoint(ep.interface, ep.usage, ep.usage_page, ep.collection);
 		device.write([0x02, headsetMode, 0x01, 0x03, 0x00, 0x01], 64); // Hardware mode
-	// }
+		device.log("Shutdown complete");
+		CORSAIR_Device_Protocol.softwareModeActive = false; 
+	}
 }
 
 export function onSidetoneAmountChanged() {
@@ -169,13 +171,6 @@ export class CORSAIR_Device_Protocol {
 		device.log("Waiting for HID handle to be ready (handles post-resume re-init)...");
 		device.pause(1000);
 		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
-		device.pause(1000);
 		_pluginInitializedBefore = true;
 
 		//Initializing vars
@@ -197,7 +192,7 @@ export class CORSAIR_Device_Protocol {
 			// lastBatteryPolling starts at 0, so Render() will fetch on the first frame.
 			// Calling it here causes HID "Access Denied" on hot-reload because the
 			// OS hasn't released the previous handle yet.
-			this.setIdleTimeout();
+			// this.setIdleTimeout();
 		}
 
 		device.log("Device model found: " + this.getDeviceName());
@@ -206,7 +201,7 @@ export class CORSAIR_Device_Protocol {
 		device.setControllableLeds(this.getLedNames(), this.getLedPositions());
 		device.setImageFromUrl(this.getDeviceImage());
 
-		this.modernDirectLightingMode();
+		//  this.modernDirectLightingMode();
 	}
 
 	modernDirectLightingMode() {
@@ -532,10 +527,10 @@ export class CORSAIR_Device_Protocol {
 
 			// Re-activate software mode whenever headset is awake but mode is not active.
 			// This handles both the wakeup transition and retries if a previous attempt failed.
-			if (!this.Config.isSleeping && !this.Config.softwareModeActive) {
+			if (!this.Config.isSleeping || !this.Config.softwareModeActive) {
 				device.log("Headset awake but software mode inactive - reactivating.");
 				this.modernDirectLightingMode();
-			}
+			} 
 		}
 	}
 
