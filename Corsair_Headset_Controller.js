@@ -34,6 +34,7 @@ export function Initialize() {
 export function Render() {
 	if (CORSAIR.getWirelessSupport()){
 
+		CORSAIR.drainPassiveEvents();
 		CORSAIR.fetchStatus();
 
 		if (!CORSAIR.Config.isSleeping){
@@ -100,7 +101,7 @@ export class CORSAIR_Device_Protocol {
 			lastMicStatePolling: 0,
 			lastMicState: 0,
 			lastBatteryPolling: 0,
-			pollingBatteryInterval: 60000, // 1 Minute
+			pollingBatteryInterval: 1800000, // safety-net active battery poll (30 minutes). Primary path is passive listening — headset pushes 0x0F level events every ~5 min and 0x10 status events instantly on plug/unplug.
 			lastpollingHeadsetStatus: 0,
 			pollingHeadsetStatus: 10000, // 10 seconds
 			isSleeping: false,
@@ -283,54 +284,90 @@ export class CORSAIR_Device_Protocol {
 		device.write([0x02, headsetMode, 0x06, 0x00, 0x09, 0x00, 0x00, 0x00].concat(RGBData), 64);
 	}
 
+	/** Drains unsolicited status events from the alternate iCUE collection.
+	 *  Verified event formats (all start with 03 01 01):
+	 *    03 01 01 <micRegister> 00 <V>   — mic mute state (0x46 Virtuoso XT, 0xA6 HS80)
+	 *    03 01 01 0F 00 <LO> <HI> ...    — battery level (16-bit LE, /10 for percent)
+	 *    03 01 01 10 00 <V>              — battery/charging status (1=Charging, 2=Discharging, 3=Full)
+	 *    03 01 01 8E 00 <V>              — LED feedback echo (ignored)
+	 *  The headset pushes these without being asked, so we listen instead of polling. */
+	drainPassiveEvents() {
+		const endpoint = this.getDeviceEndpoint();
+		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
+
+		const previousMicState = this.Config.lastMicState;
+		const previousBatteryStatus = this.Config.lastBatteryStatus;
+		let levelChanged = false;
+		let statusChanged = false;
+
+		device.set_endpoint(endpoint[`interface`], 0x0002, 0xff42, 0x0006);
+		for (let i = 0; i < 16; i++) {
+			const report = device.read([0x03, 0x01, 0x01, 0x00, 0x00], 64);
+			if (device.getLastReadSize() <= 0) break;
+			if (report[0] !== 0x03 || report[1] !== 0x01 || report[2] !== 0x01) continue;
+
+			const reg = report[3];
+			if (reg === micRegister) {
+				this.Config.lastMicState = report[5];
+				this.Config.lastMicStatePolling = Date.now();
+			} else if (reg === 0x0F) {
+				const raw = report[5] | (report[6] << 8);
+				this.Config.lastBatteryLevel = raw / 10;
+				this.Config.lastBatteryPolling = Date.now();
+				levelChanged = true;
+			} else if (reg === 0x10) {
+				this.Config.lastBatteryStatus = report[5];
+				this.Config.lastBatteryPolling = Date.now();
+				statusChanged = true;
+			}
+		}
+		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
+
+		if (this.Config.lastMicState !== previousMicState) {
+			device.log(this.Config.lastMicState === 1 ? "Microphone muted" : "Microphone unmuted");
+		}
+		if (levelChanged) {
+			battery.setBatteryLevel(this.Config.lastBatteryLevel);
+			device.log(`Battery Level is [${this.Config.lastBatteryLevel}%]`);
+		}
+		if (statusChanged && this.Config.lastBatteryStatus !== previousBatteryStatus) {
+			const stateVal = this.chargingStateDictionary[this.Config.lastBatteryStatus];
+			if (stateVal !== undefined) battery.setBatteryState(stateVal);
+			const label = this.chargingStates[this.Config.lastBatteryStatus] || `unknown (${this.Config.lastBatteryStatus})`;
+			device.log(`Battery Status is [${label}]`);
+		}
+	}
+
 	fetchMicStatus(){
+
+		// Primary state source is drainPassiveEvents() running every Render frame.
+		// This method only acts as a safety-net active poll when no event has
+		// arrived for pollingInterval ms (e.g. just-woke headset, plugin reload
+		// before any button press). It returns Config.lastMicState for sendColors().
+
+		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
+			return this.Config.lastMicState;
+		}
 
 		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
 		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 		const endpoint = this.getDeviceEndpoint();
-		const previousState = this.Config.lastMicState;
-
-		// Primary path: passive listen on the alternate iCUE collection (0x0006 /
-		// usage 0x0002 / usage_page 0xff42). The headset pushes mute events there
-		// unsolicited within ~150ms of every button press. Verified live: events
-		// arrive in the form
-		//   03 01 02 <pressed>           — button transition (1 press, 0 release)
-		//   03 01 01 8e 00 <value>       — LED feedback echo
-		//   03 01 01 <register> 00 <V>   — authoritative mic register state
-		// We trust the register event (byte 3 == micRegister) and ignore the rest.
-		device.set_endpoint(endpoint[`interface`], 0x0002, 0xff42, 0x0006);
-		for (let i = 0; i < 8; i++) {
-			const report = device.read([0x03, 0x01, 0x01, micRegister, 0x00], 64);
-			if (device.getLastReadSize() <= 0) break;
-			if (report[0] === 0x03 && report[1] === 0x01 && report[2] === 0x01 && report[3] === micRegister) {
-				this.Config.lastMicState = report[5];
-				this.Config.lastMicStatePolling = Date.now(); // reset cooldown — we know the state now
-			}
-		}
-
-		// Switch back to the main iCUE collection for any subsequent reads/writes
-		// elsewhere in the same frame (RGB writes etc).
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
 
-		// Safety-net active poll: only every 10s, and only if we haven't received
-		// an event since then. Catches edge cases like a missed event after wake
-		// or plugin reload before any button has been pressed.
-		if (Date.now() - this.Config.lastMicStatePolling >= this.Config.pollingInterval) {
-			const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
-			device.pause(30);
-			device.write(micStatusPacket, 64);
-			device.pause(60);
-			this.Config.lastMicStatePolling = Date.now();
+		const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
+		device.pause(30);
+		device.write(micStatusPacket, 64);
+		device.pause(60);
+		this.Config.lastMicStatePolling = Date.now();
 
-			for (let i = 0; i < 8; i++) {
-				const report = device.read(micStatusPacket, 64);
-				if (device.getLastReadSize() <= 0) break;
-				if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
-					this.Config.lastMicState = report[4];
-				}
+		const previousState = this.Config.lastMicState;
+		for (let i = 0; i < 8; i++) {
+			const report = device.read(micStatusPacket, 64);
+			if (device.getLastReadSize() <= 0) break;
+			if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
+				this.Config.lastMicState = report[4];
 			}
 		}
-
 		if (this.Config.lastMicState !== previousState) {
 			device.log(this.Config.lastMicState === 1 ? "Microphone muted" : "Microphone unmuted");
 		}

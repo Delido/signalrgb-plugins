@@ -34,7 +34,7 @@ Effect: a static effect (e.g. Solid Color) drops from ~30 USB writes/s down to 1
 
 Override colors (e.g. the `#000000` shutdown frame) bypass the dirty-flag check.
 
-### Mic-status — passive listening on the alternate iCUE collection
+### Mic-status, battery level and charging status — passive listening on the alternate iCUE collection
 
 Upstream polls actively every `pollingInterval` (1000 ms) on the iCUE main collection: `device.write()`, wait, `device.read()` for the response, parse `report[3] === micRegister`. Mute-LED reaction time was bounded by the polling interval.
 
@@ -57,17 +57,32 @@ The Virtuoso XT exposes two HID TLCs on the iCUE vendor usage-page (`0xff42`):
 4. Switches the endpoint back to the main collection `0x0005` so subsequent RGB writes / battery polls / sleep-status reads behave as before.
 5. Active polls are kept as a 10 s safety net — they only run if no event arrived in the meantime (e.g. after wake-from-sleep or a fresh plugin reload).
 
-Observed event format on the alt collection (verified live):
+Observed event format on the alt collection (all verified live):
 
 ```
-03 01 02 <pressed>            — button transition (1 = pressed, 0 = released)
-03 01 01 8e 00 <value>        — LED feedback echo (mirrors the LED state)
-03 01 01 <micRegister> 00 <V> — authoritative mic register state, byte 5 holds value
+03 01 02 <pressed>             — button transition (1 = pressed, 0 = released)
+03 01 01 8e 00 <V>             — LED feedback echo (mirrors LED state)
+03 01 01 <micRegister> 00 <V>  — authoritative mic register, byte 5 holds value
+03 01 01 0F 00 <LO> <HI>       — battery level, 16-bit LE, /10 for percent (~5 min cadence)
+03 01 01 10 00 <V>             — charging status (1 = Charging, 2 = Discharging, 3 = Full)
 ```
 
-The fork only uses the third form (mic register event); the first two are observed but discarded.
+`drainPassiveEvents()` is called once per `Render()` frame and updates `Config.lastMicState`, `Config.lastBatteryLevel` and `Config.lastBatteryStatus` from these events. On battery-level / charging-status changes it also calls `battery.setBatteryLevel()` / `battery.setBatteryState()` so the SignalRGB UI reflects the new value immediately.
 
-For the active safety-net poll path the same parser fix from the diagnostic phase applies: response shape is `[01 01 02 00 <value> 00 …]` — byte 3 is always `0x00` (not the register echo upstream's parser expected), value at byte 4. Match on `report[0]=0x01 && report[1]=0x01 && report[2]=0x02`.
+State-change log lines (one per transition, no spam in steady state):
+
+```
+Microphone muted
+Microphone unmuted
+Battery Level is [95%]
+Battery Status is [Charging]
+```
+
+For the active safety-net poll path (`fetchMicStatus`, `fetchBattery`) the same parser fix from the diagnostic phase applies: the mic-poll response shape is `[01 01 02 00 <value> 00 …]` — byte 3 is always `0x00` (not the register echo upstream's parser expected), value at byte 4.
+
+### Battery polling cadence
+
+Upstream's `pollingBatteryInterval` is 60 s — the plugin actively requests both registers every minute. With passive events arriving every ~5 minutes for level and instantly on every plug/unplug for status, the active poll is now redundant. The fork raises `pollingBatteryInterval` to **30 minutes** (1 800 000 ms). It still fires once on the first `Render()` (because `lastBatteryPolling` starts at `0`) so the SignalRGB battery indicator is populated immediately on plugin load, and after that it only fires if no event has been received for half an hour.
 
 ### Init/sleep handling fixes
 
