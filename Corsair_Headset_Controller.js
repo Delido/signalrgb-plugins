@@ -157,11 +157,17 @@ export class CORSAIR_Device_Protocol {
 	setWirelessSupport(wireless) { this.Config.Wireless = wireless; }
 
 	Initialize() {
-		// On re-initialization (resume/hot-reload) Windows needs ~20s to restore USB
-		// device access after SignalRGB already detects the dongle — pause before any
-		// write to avoid the Access Denied / Unrecoverable Error race.
-		// First start: short pause only (HID handle release on fresh load).
-		device.pause(_pluginInitializedBefore ? 22000 : 1000);
+		// Windows can hold the USB HID handle for up to ~20s after a system
+		// resume from suspend before releasing it back to user-space.
+		// SignalRGB regenerates its HID handles on resume and re-runs Initialize;
+		// the plugin module is also reloaded, which resets every module-level
+		// flag we could use to distinguish "first start" from "post-resume".
+		// Both writes and reads fail silently while the handle isn't ready
+		// (Access Denied / Unrecoverable Error in the host log, no JS exception),
+		// so we can't probe and back off either. The only reliable option is to
+		// always pause long enough on Initialize.
+		device.log("Waiting for HID handle to be ready (handles post-resume re-init)...");
+		device.pause(22000);
 		_pluginInitializedBefore = true;
 
 		//Initializing vars
