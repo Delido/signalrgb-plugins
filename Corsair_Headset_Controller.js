@@ -109,6 +109,8 @@ export class CORSAIR_Device_Protocol {
 			lastBatteryRetry: 0,
 			lastBatteryLevel: null,
 			lastBatteryStatus: null, // raw status: 1=Charging, 2=Discharging, 3=Fully Charged
+			lastEventDrainAt: 0,
+			eventDrainIntervalMs: 100, // throttle col6 listening to ~10 Hz; events arrive ~150ms after button press so we still catch them fast, but Render isn't paying for two endpoint switches every frame.
 			inLowBatteryMode: false,
 			lastRGBData: null,
 			lastRGBSentAt: 0,
@@ -292,6 +294,10 @@ export class CORSAIR_Device_Protocol {
 	 *    03 01 01 8E 00 <V>              — LED feedback echo (ignored)
 	 *  The headset pushes these without being asked, so we listen instead of polling. */
 	drainPassiveEvents() {
+		const now = Date.now();
+		if (now - this.Config.lastEventDrainAt < this.Config.eventDrainIntervalMs) return;
+		this.Config.lastEventDrainAt = now;
+
 		const endpoint = this.getDeviceEndpoint();
 		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 
