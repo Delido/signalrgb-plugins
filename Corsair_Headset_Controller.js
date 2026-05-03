@@ -110,7 +110,7 @@ export class CORSAIR_Device_Protocol {
 			lastBatteryLevel: null,
 			lastBatteryStatus: null, // raw status: 1=Charging, 2=Discharging, 3=Fully Charged
 			lastEventDrainAt: 0,
-			eventDrainIntervalMs: 100, // throttle col6 listening to ~10 Hz; events arrive ~150ms after button press so we still catch them fast, but Render isn't paying for two endpoint switches every frame.
+			eventDrainIntervalMs: 1000, // throttle col6 listening to 1 Hz; mute reaction stays under ~1s (matches upstream's polling latency) while Render isn't paying for endpoint switches and blocking device.read() calls every frame.
 			inLowBatteryMode: false,
 			lastRGBData: null,
 			lastRGBSentAt: 0,
