@@ -172,6 +172,10 @@ export class CORSAIR_Device_Protocol {
 		device.pause(1000);
 		device.pause(1000);
 		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
 		_pluginInitializedBefore = true;
 
 		//Initializing vars
