@@ -528,7 +528,7 @@ export class CORSAIR_Device_Protocol {
 
 			// Re-activate software mode whenever headset is awake but mode is not active.
 			// This handles both the wakeup transition and retries if a previous attempt failed.
-			if (!this.Config.isSleeping && !this.Config.softwareModeActive) {
+			if (!this.Config.isSleeping && !CORSAIR_Device_Protocol.softwareModeActive) {
 				device.log("Headset awake but software mode inactive - reactivating.");
 				this.modernDirectLightingMode();
 			} 
