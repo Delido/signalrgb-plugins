@@ -34,18 +34,40 @@ Effect: a static effect (e.g. Solid Color) drops from ~30 USB writes/s down to 1
 
 Override colors (e.g. the `#000000` shutdown frame) bypass the dirty-flag check.
 
-### Mic-status poll — interval, drain loop, and parser fix
+### Mic-status — passive listening on the alternate iCUE collection
 
-Upstream polls every `pollingInterval` (currently 1000 ms in upstream master) with a single `device.read()` after `device.write(); device.pause(60)`, and the parser checks `report[3] === micRegister`.
+Upstream polls actively every `pollingInterval` (1000 ms) on the iCUE main collection: `device.write()`, wait, `device.read()` for the response, parse `report[3] === micRegister`. Mute-LED reaction time was bounded by the polling interval.
 
-The fork changes three things:
+The fork moves to **pure passive listening** on a different HID top-level collection:
 
-1. **Polling interval reduced to 500 ms.** Compromise between mute-LED reaction time and the cost of keeping the radio link active for the round trip.
-2. **No `clearReadBuffer()` before the poll.** Upstream clears the buffer right before the write, which throws away any data that arrived in the gap. The fork keeps the buffer so accumulated bytes can be drained.
-3. **Drain up to 8 packets per poll.** Each iteration reads one packet, falls through if `getLastReadSize() <= 0`, otherwise tries to interpret it.
-4. **Parser fixed.** Diagnostic logging revealed that the actual response shape is `[01 01 02 00 <value> 00 …]` — byte 3 is always `0x00`, not the register echo upstream's parser expected. The fork matches on `report[0]=0x01 && report[1]=0x01 && report[2]=0x02` and reads the value at `report[4]`.
+The Virtuoso XT exposes two HID TLCs on the iCUE vendor usage-page (`0xff42`):
 
-Without (4) the explicit poll's value was being silently discarded. The mute LED could appear stuck in an old state until a different code path happened to reset it.
+| Collection | Usage | Used for |
+|------------|-------|----------|
+| `0x0005` | `0x0001` | Output reports for control (RGB writes, software-mode set, active polls) and their responses (report-ID `0x01`) |
+| `0x0006` | `0x0002` | **Input-only event channel** with report-ID `0x03` — unsolicited mute / button / LED state events |
+
+`device.read()` is bound to whichever collection `device.set_endpoint()` last selected. Reading from collection `0x0005` will *never* surface report-ID `0x03` events, no matter how clearly Wireshark sees them on the wire — each report ID is owned by its declaring TLC.
+
+`fetchMicStatus()` therefore:
+
+1. Switches the endpoint to `interface 3, usage 0x0002, usage_page 0xff42, collection 0x0006`.
+2. Drains up to 8 events that queued since the last call.
+3. For each event matching the form `03 01 01 <micRegister> 00 <value>`, takes the authoritative mic-register value from byte 5 and resets the active-poll cooldown.
+4. Switches the endpoint back to the main collection `0x0005` so subsequent RGB writes / battery polls / sleep-status reads behave as before.
+5. Active polls are kept as a 10 s safety net — they only run if no event arrived in the meantime (e.g. after wake-from-sleep or a fresh plugin reload).
+
+Observed event format on the alt collection (verified live):
+
+```
+03 01 02 <pressed>            — button transition (1 = pressed, 0 = released)
+03 01 01 8e 00 <value>        — LED feedback echo (mirrors the LED state)
+03 01 01 <micRegister> 00 <V> — authoritative mic register state, byte 5 holds value
+```
+
+The fork only uses the third form (mic register event); the first two are observed but discarded.
+
+For the active safety-net poll path the same parser fix from the diagnostic phase applies: response shape is `[01 01 02 00 <value> 00 …]` — byte 3 is always `0x00` (not the register echo upstream's parser expected), value at byte 4. Match on `report[0]=0x01 && report[1]=0x01 && report[2]=0x02`.
 
 ### Init/sleep handling fixes
 
@@ -63,9 +85,9 @@ Some of these changes were already present in this branch before the fork notes 
 
 ## Known limitations
 
-- **Unsolicited mute events are not surfaced.** Wireshark capture (`dumps/corsair_headset/signalrgb_laufzeit_mic_mute.pcapng`) confirms the headset pushes `[03 01 01 <register> 00 <value>]` reports within ~150 ms of every button press, both when SignalRGB is running and when it isn't. SignalRGB's plugin host appears to gate `device.read()` on the upstream report-ID byte and never returns those events to the JS layer. Practical mute-LED reaction time stays bounded by `pollingInterval` (currently 500 ms) — there's no way to react faster from inside the plugin without a SignalRGB API change.
-- **Battery drain is mostly hardware.** A/B test with the included `Power Saver Test Mode` toggle (since removed) showed ~14 min/% in normal operation vs ~11 min/% with the plugin's RGB and mic traffic disabled — the difference is small and the absolute numbers exceed Corsair's spec (≈15 h with RGB → ≈900 min vs measured ≈1400 min idle). The big radio-link drain is the firmware itself, not the plugin.
-- **Cable-only mode for headsets that support it isn't separately verified.** This plugin's wired path uses `headsetMode = 0x08`; the fork hasn't been retested wired since the mic-parser fix.
+- **Battery drain is mostly hardware.** A/B test with the included `Power Saver Test Mode` toggle (since removed) showed ~14 min/% in normal operation vs ~11 min/% with the plugin's RGB and mic traffic disabled — the difference is small and the absolute numbers exceed Corsair's spec (≈15 h with RGB → ≈900 min vs measured ≈1400 min idle). The big radio-link drain is the firmware itself (audio class isochronous streams on EP `0x03`/`0x83` at ~100 packets/s each direction), not the plugin. Plugin packets are <1 % of headset USB traffic when audio is routed to the headset.
+- **Cable-only mode for headsets that support it isn't separately verified.** This plugin's wired path uses `headsetMode = 0x08`; the fork hasn't been retested wired since the mic-parser fix and the move to passive listening on collection `0x0006` (a wired Virtuoso may expose the same TLC, but it's untested).
+- **Other Corsair models may need the alternate-collection trick verified.** The `0x0005`/`0x0006` split was confirmed on the Virtuoso XT Wireless. Other models in the upstream device library (HS80, Virtuoso SE, base Virtuoso) likely follow the same pattern but haven't been exercised here. If passive listening doesn't work on a given device, the 10 s safety-net active poll keeps the LED behavior at least functional.
 
 ---
 
@@ -77,6 +99,8 @@ The reverse-engineering captures used to derive the fixes live under `dumps/cors
 |------|---------------|
 | `signalrgb_laufzeit_nach_einschalten.pcapng` | Steady-state outbound traffic after a fresh headset power-on. Used to count packets-per-second by type. |
 | `signalrgb_laufzeit_mic_mute.pcapng` | Mute-button presses during SignalRGB-active operation. Used to confirm the headset pushes `03 01 01 46 00 <value>` events on every press. |
+| `mic_on_off_2package_per_click.pcapng` | Minimal isolated capture (4 packets) of two mute clicks. Used to confirm the events arrive on EP `0x81` regardless of whether SignalRGB is running and to identify the alt-collection routing. |
+| `headset_aktuell.pcapng` | 3.6 s capture during normal operation. ~720 isochronous audio packets vs ~10 plugin control packets — establishes the audio stream as the dominant USB load. |
 
 Useful Wireshark display filter for inspecting unsolicited mic events on a Virtuoso XT:
 
@@ -85,3 +109,5 @@ usb.src != "host" && frame contains 03:01:01:46
 ```
 
 For an HS80 use `03:01:01:a6` instead.
+
+To pin down which HID top-level collection a given report ID belongs to (in case another model needs the alt-collection trick adapted): use `tshark -G fields | grep usbhid` or read the device's HID descriptor directly via `Get_Report` to a configuration-descriptor request. Each collection's report-ID set is what determines whether `device.read()` will surface the events.
