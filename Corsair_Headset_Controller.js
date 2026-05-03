@@ -285,32 +285,51 @@ export class CORSAIR_Device_Protocol {
 
 	fetchMicStatus(){
 
-		// Throttled active poll. SignalRGB's device.read() never surfaces the
-		// 03 01 01 <register> 00 <value> unsolicited events the headset pushes
-		// on every button press (verified via diagnostic logging — passive reads
-		// only ever returned 01 01 06 00 RGB-write ACKs, never the 0x03 events
-		// that Wireshark clearly shows on the wire). The polling cadence is
-		// therefore the floor on mute-LED reaction time.
+		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
+		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
+		const endpoint = this.getDeviceEndpoint();
+
+		// === DIAGNOSTIC: passive peek on the OTHER iCUE collection ===
+		// Wireshark capture mic_on_off_2package_per_click.pcapng shows the
+		// headset emits 03 01 02 <state> ... button events on every click.
+		// Our normal endpoint is collection 0x0005 / usage 0x0001 — we never
+		// see those events there. Try collection 0x0006 / usage 0x0002 (also
+		// on usage_page 0xFF42) which is opened by the host but never used
+		// by the plugin.
+		device.set_endpoint(endpoint[`interface`], 0x0002, 0xff42, 0x0006);
+		const altLog = [];
+		for (let i = 0; i < 4; i++) {
+			const report = device.read([0x03, 0x01, 0x02, 0x00, 0x00], 64);
+			const size = device.getLastReadSize();
+			if (size <= 0) break;
+			altLog.push(`[${size}b] ${(report[0]||0).toString(16)} ${(report[1]||0).toString(16)} ${(report[2]||0).toString(16)} ${(report[3]||0).toString(16)} ${(report[4]||0).toString(16)} ${(report[5]||0).toString(16)}`);
+			if (report[0] === 0x03 && report[1] === 0x01 && report[2] === 0x02) {
+				// Button event: byte 3 = 1 on press, 0 on release.
+				// Use rising edge (press) as a toggle trigger.
+				if (report[3] === 0x01) {
+					this.Config.lastMicState = this.Config.lastMicState === 0 ? 1 : 0;
+				}
+			}
+		}
+		if (altLog.length > 0) {
+			device.log(`[MicPoll-COL6] state=${this.Config.lastMicState} drained=${altLog.length}: ${altLog.join(" | ")}`);
+		}
+
+		// Always switch back to the main iCUE collection before doing anything else.
+		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
+
+		// Throttled active poll on the normal collection — confirms state in case
+		// the diagnostic above ever stops working or we missed a button edge.
 		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
 			return this.Config.lastMicState;
 		}
 
-		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
-		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
-		const endpoint = this.getDeviceEndpoint();
-		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
-
 		const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
-
 		device.pause(30);
 		device.write(micStatusPacket, 64);
 		device.pause(60);
 		this.Config.lastMicStatePolling = Date.now();
 
-		// Drain up to 8 packets. Verified format from live diagnostics:
-		//   Mic poll response : [01 01 02 00 <value> 00 ...]   value at byte 4
-		//   RGB ack            : [01 01 06 00 00 ...]           ignored (byte 2 = 0x06)
-		// Match on bytes 0,1,2 = 01 01 02 and read the value at byte 4.
 		for (let i = 0; i < 8; i++) {
 			const report = device.read(micStatusPacket, 64);
 			if (device.getLastReadSize() <= 0) break;
