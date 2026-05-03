@@ -192,6 +192,7 @@ export class CORSAIR_Device_Protocol {
 			// lastBatteryPolling starts at 0, so Render() will fetch on the first frame.
 			// Calling it here causes HID "Access Denied" on hot-reload because the
 			// OS hasn't released the previous handle yet.
+			// also setIdleTimeout!
 			// this.setIdleTimeout();
 		}
 
@@ -200,7 +201,7 @@ export class CORSAIR_Device_Protocol {
 		device.setSize(DeviceProperties.size);
 		device.setControllableLeds(this.getLedNames(), this.getLedPositions());
 		device.setImageFromUrl(this.getDeviceImage());
-
+		// do not set modernDirectLightingMode in Initialize because of Wake-Up BUG!
 		//  this.modernDirectLightingMode();
 	}
 
@@ -527,7 +528,7 @@ export class CORSAIR_Device_Protocol {
 
 			// Re-activate software mode whenever headset is awake but mode is not active.
 			// This handles both the wakeup transition and retries if a previous attempt failed.
-			if (!this.Config.isSleeping || !this.Config.softwareModeActive) {
+			if (!this.Config.isSleeping && !this.Config.softwareModeActive) {
 				device.log("Headset awake but software mode inactive - reactivating.");
 				this.modernDirectLightingMode();
 			} 
