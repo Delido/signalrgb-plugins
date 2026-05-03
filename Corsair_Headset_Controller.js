@@ -196,10 +196,13 @@ export class CORSAIR_Device_Protocol {
 		device.setControllableLeds(this.getLedNames(), this.getLedPositions());
 		device.setImageFromUrl(this.getDeviceImage());
 		// do not set modernDirectLightingMode in Initialize because of Wake-Up BUG!
-		//  this.modernDirectLightingMode();
+		// this.modernDirectLightingMode();
+		//  this.fetchStatus();
+		this.Config.softwareModeActive = false;
 	}
 
 	modernDirectLightingMode() {
+		device.pause(1000);
 		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
 		const endpoint = this.getDeviceEndpoint();
 		device.set_endpoint(endpoint[`interface`], endpoint[`usage`], endpoint[`usage_page`], endpoint[`collection`]);
@@ -522,7 +525,6 @@ export class CORSAIR_Device_Protocol {
 			// Re-activate software mode whenever headset is awake but mode is not active.
 			// This handles both the wakeup transition and retries if a previous attempt failed.
 			if (!this.Config.isSleeping && !this.Config.softwareModeActive) {
-				device.log(this.Config.softwareModeActive)
 				device.log("Headset awake but software mode inactive - reactivating.");
 				this.modernDirectLightingMode();
 			} 
@@ -533,8 +535,10 @@ export class CORSAIR_Device_Protocol {
 		const ep = CORSAIR.getDeviceEndpoint();
 		device.set_endpoint(ep.interface, ep.usage, ep.usage_page, ep.collection);
 		device.write([0x02, headsetMode, 0x01, 0x03, 0x00, 0x01], 64); // Hardware mode
-		device.log("Shutdown complete");
 		this.Config.softwareModeActive = false;
+		this.Config.lastpollingHeadsetStatus = 0;
+		device.log("Shutdown complete");
+	
 	}
 	detectDeviceEndpoint(deviceLibrary) {//Oh look at me. I'm a HS80 - 0x0A6B. I'm special
 
