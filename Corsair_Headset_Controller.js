@@ -71,12 +71,7 @@ export function Shutdown(SystemSuspending) {
 		// Go Dark on System Sleep/Shutdown
 		CORSAIR.sendColors("#000000");
 	}else{
-		const headsetMode = CORSAIR.getWirelessSupport() === true ? 0x09 : 0x08;
-		const ep = CORSAIR.getDeviceEndpoint();
-		device.set_endpoint(ep.interface, ep.usage, ep.usage_page, ep.collection);
-		device.write([0x02, headsetMode, 0x01, 0x03, 0x00, 0x01], 64); // Hardware mode
-		device.log("Shutdown complete");
-		CORSAIR_Device_Protocol.softwareModeActive = false; 
+		CORSAIR.shutdown();
 	}
 }
 
@@ -521,20 +516,27 @@ export class CORSAIR_Device_Protocol {
 
 	fetchStatus () {
 		const now = Date.now();
-
 		if(now - this.Config.lastpollingHeadsetStatus > this.Config.pollingHeadsetStatus) {
 			this.fetchSleepStatus();
 			this.Config.lastpollingHeadsetStatus = Date.now();
 
 			// Re-activate software mode whenever headset is awake but mode is not active.
 			// This handles both the wakeup transition and retries if a previous attempt failed.
-			if (!this.Config.isSleeping && !CORSAIR_Device_Protocol.softwareModeActive) {
+			if (!this.Config.isSleeping && !this.Config.softwareModeActive) {
+				device.log(this.Config.softwareModeActive)
 				device.log("Headset awake but software mode inactive - reactivating.");
 				this.modernDirectLightingMode();
 			} 
-		}
+		} 
 	}
-
+	shutdown(){
+		const headsetMode = CORSAIR.getWirelessSupport() === true ? 0x09 : 0x08;
+		const ep = CORSAIR.getDeviceEndpoint();
+		device.set_endpoint(ep.interface, ep.usage, ep.usage_page, ep.collection);
+		device.write([0x02, headsetMode, 0x01, 0x03, 0x00, 0x01], 64); // Hardware mode
+		device.log("Shutdown complete");
+		this.Config.softwareModeActive = false;
+	}
 	detectDeviceEndpoint(deviceLibrary) {//Oh look at me. I'm a HS80 - 0x0A6B. I'm special
 
 		device.log("Searching for endpoints...");
