@@ -67,15 +67,15 @@ export function Render() {
 
 export function Shutdown(SystemSuspending) {
 
-	if(SystemSuspending){
-		// Go Dark on System Sleep/Shutdown
-		CORSAIR.sendColors("#000000");
-	}else{
+	// if(SystemSuspending){
+	// 	// Go Dark on System Sleep/Shutdown
+	// 	CORSAIR.sendColors("#000000");
+	// }else{
 		const headsetMode = CORSAIR.getWirelessSupport() === true ? 0x09 : 0x08;
 		const ep = CORSAIR.getDeviceEndpoint();
 		device.set_endpoint(ep.interface, ep.usage, ep.usage_page, ep.collection);
 		device.write([0x02, headsetMode, 0x01, 0x03, 0x00, 0x01], 64); // Hardware mode
-	}
+	// }
 }
 
 export function onSidetoneAmountChanged() {
