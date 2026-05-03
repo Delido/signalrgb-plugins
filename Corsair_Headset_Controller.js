@@ -288,6 +288,7 @@ export class CORSAIR_Device_Protocol {
 		const headsetMode = this.getWirelessSupport() === true ? 0x09 : 0x08;
 		const micRegister = this.getDeviceName().includes("HS80") === true ? 0xA6 : 0x46;
 		const endpoint = this.getDeviceEndpoint();
+		const previousState = this.Config.lastMicState;
 
 		// Primary path: passive listen on the alternate iCUE collection (0x0006 /
 		// usage 0x0002 / usage_page 0xff42). The headset pushes mute events there
@@ -314,22 +315,24 @@ export class CORSAIR_Device_Protocol {
 		// Safety-net active poll: only every 10s, and only if we haven't received
 		// an event since then. Catches edge cases like a missed event after wake
 		// or plugin reload before any button has been pressed.
-		if (Date.now() - this.Config.lastMicStatePolling < this.Config.pollingInterval) {
-			return this.Config.lastMicState;
+		if (Date.now() - this.Config.lastMicStatePolling >= this.Config.pollingInterval) {
+			const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
+			device.pause(30);
+			device.write(micStatusPacket, 64);
+			device.pause(60);
+			this.Config.lastMicStatePolling = Date.now();
+
+			for (let i = 0; i < 8; i++) {
+				const report = device.read(micStatusPacket, 64);
+				if (device.getLastReadSize() <= 0) break;
+				if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
+					this.Config.lastMicState = report[4];
+				}
+			}
 		}
 
-		const micStatusPacket = [0x02, headsetMode, 0x02, micRegister, 0x00];
-		device.pause(30);
-		device.write(micStatusPacket, 64);
-		device.pause(60);
-		this.Config.lastMicStatePolling = Date.now();
-
-		for (let i = 0; i < 8; i++) {
-			const report = device.read(micStatusPacket, 64);
-			if (device.getLastReadSize() <= 0) break;
-			if (report[0] === 0x01 && report[1] === 0x01 && report[2] === 0x02) {
-				this.Config.lastMicState = report[4];
-			}
+		if (this.Config.lastMicState !== previousState) {
+			device.log(this.Config.lastMicState === 1 ? "Microphone muted" : "Microphone unmuted");
 		}
 
 		return this.Config.lastMicState;
