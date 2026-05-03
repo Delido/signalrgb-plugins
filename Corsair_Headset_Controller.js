@@ -167,7 +167,11 @@ export class CORSAIR_Device_Protocol {
 		// so we can't probe and back off either. The only reliable option is to
 		// always pause long enough on Initialize.
 		device.log("Waiting for HID handle to be ready (handles post-resume re-init)...");
-		device.pause(22000);
+		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
+		device.pause(1000);
 		_pluginInitializedBefore = true;
 
 		//Initializing vars
