@@ -502,6 +502,7 @@ export class CORSAIR_Device_Protocol {
 		if (device.getLastReadSize() === 0) {
 			this.Config.isSleeping = true;
 			this.Config.softwareModeActive = false;
+			device.log("Headset sleeping");
 			return;
 		}
 
