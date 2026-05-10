@@ -13,9 +13,9 @@ A collection of custom device plugins for [SignalRGB](https://www.signalrgb.com/
 | `ASUS_Mouse_Protocol.js` | ASUS Mice | USB HID |
 | `ASUS_Omni_Device.js` | ASUS Combo Devices (Keyboard + Mouse) | USB HID |
 | `Asus_Ampere_Lovelace_GPU.js` | ASUS GPUs (Ampere / Lovelace) | **SMBUS** ⚠️ |
+| `Corsair_Bragi_Device.js` | Corsair Bragi-family devices, including the new "Bragi v2" generation (Vanguard 96, **Vanguard Pro 96**) — community fork of upstream with the v2 wire-format + `0x1B` session handshake added. See [protocol notes](dumps/corsair_keyboard/PROTOCOL.md) for the Bragi v2 reverse-engineering details. | USB HID |
 | `Corsair_Headset_Controller.js` | Corsair Headsets (forked from upstream — see [fork notes](Corsair_Headset_Controller.md)) | USB HID |
 | `Corsair_Lighting_Commander_Core.js` | Corsair Commander Core | USB HID |
-| `Corsair_Vanguard_Pro_96.js` | Corsair Vanguard Pro 96 (Bragi v2 — RE'd from scratch, see [protocol notes](dumps/corsair_keyboard/PROTOCOL.md)) | USB HID |
 | `Logitech_Modern_Device.js` | Logitech Devices (incl. G PRO X 2 Superstrike — see [protocol notes](Logitech_GPRO_X2_Superstrike.md)) | HID++ 2.0 |
 
 ### ⚠️ SMBUS Warning
