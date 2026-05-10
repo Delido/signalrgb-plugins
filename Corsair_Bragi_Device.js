@@ -26,14 +26,31 @@ PollRate:readonly
 dpiStages:readonly
 ConnectedFans:readonly
 FanControllerArray:readonly
+gameMode:readonly
+fnHighlightColor:readonly
 */
 export function ControllableParameters(){
 	return [
 		{"property":"shutdownColor", "group":"lighting", "label":"Shutdown Color", description: "This color is applied to the device when the System, or SignalRGB is shutting down", "min":"0", "max":"360", "type":"color", "default":"#000000"},
 		{"property":"LightingMode", "group":"lighting", "label":"Lighting Mode", description: "Determines where the device's RGB comes from. Canvas will pull from the active Effect, while Forced will override it to a specific color", "type":"combobox", "values":["Canvas", "Forced"], "default":"Canvas"},
 		{"property":"forcedColor", "group":"lighting", "label":"Forced Color", description: "The color used when 'Forced' Lighting Mode is enabled", "min":"0", "max":"360", "type":"color", "default":"#009bde"},
-
+		{"property":"gameMode", "group":"", "label":"Game Mode", description: "Toggles the keyboard's hardware Game Mode (Win key + macros disabled, Game Mode LED on). Mirrors what the physical Game Mode key does. Verified on Vanguard Pro 96 via setProperty(0xE1).", "type":"boolean", "default": false},
+		{"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash to while Fn is held down (mirrors iCUE's behaviour). Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
 	];
+}
+
+export function ongameModeChanged() {
+	// Game Mode (property 0xE1) on the Vanguard Pro 96 only honours the Bragi-v2
+	// wire format `[0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value]`. The protocol
+	// class's `Corsair.SetProperty()` emits the older `[0x00, deviceID|0x08, …]`
+	// shape which the v2 firmware silently ignores for this property. We
+	// therefore write the captured iCUE bytes verbatim (one extra leading 0x00
+	// for the SDK report-ID slot).
+	//
+	// Reference capture: dumps/corsair_keyboard/game_mode_on_off.pcapng frame 9.
+	const value = gameMode ? 0x01 : 0x00;
+	device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value], 1024);
+	device.log(`Game Mode ${gameMode ? "engaged" : "released"} via v2 setProperty(0xE1)`);
 }
 
 const devFlags = false;
@@ -918,12 +935,27 @@ function getStandardColors(deviceConfig, overrideColor, subdevice = false){
 	return RGBData;
 }
 
+// Keys that get highlighted with `fnHighlightColor` while the Fn key is held —
+// matches iCUE's "press Fn, see which keys do something" affordance. List
+// reverse-engineered from iCUE's behaviour on the Vanguard Pro 96: the F-row
+// (12 keys), the macro/profile/media triggers (M, P, Right Shift, Enter, the
+// Numpad shortcuts 0/1/3/7/9, plus Win-Lock and the Elgato button), and Fn
+// itself gets a visual feedback glow.
+const FN_LAYER_HIGHLIGHT_NAMES = new Set([
+	"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+	"Left Win", "M", "P", "Right Shift", "Enter", "Elgato", "Fn",
+	"Num 0", "Num 1", "Num 3", "Num 7", "Num 9",
+]);
+
 function getLightingControllerColors(deviceConfig, overrideColor, subdevice = false) {
 	if(!deviceConfig){
 		throw new Error(`Device config is undefined. Is this a supported mouse?`);
 	}
 
 	const RGBData = new Array(deviceConfig.ledMap.length * 3);
+	const fnHighlight = (FnEnabled && fnHighlightColor && fnHighlightColor !== "#000000")
+		? hexToRgb(fnHighlightColor)
+		: null;
 
 	for(let iIdx = 0; iIdx < deviceConfig.ledPositions.length; iIdx++) {
 		const ledPosition = deviceConfig.ledPositions[iIdx];
@@ -936,6 +968,8 @@ function getLightingControllerColors(deviceConfig, overrideColor, subdevice = fa
 
 		if(overrideColor){
 			col = hexToRgb(overrideColor);
+		}else if (fnHighlight && deviceConfig.ledNames && FN_LAYER_HIGHLIGHT_NAMES.has(deviceConfig.ledNames[iIdx])) {
+			col = fnHighlight;
 		}else if (LightingMode === "Forced") {
 			col = hexToRgb(forcedColor);
 		}else{
