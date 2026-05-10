@@ -39,18 +39,29 @@ export function ControllableParameters(){
 	];
 }
 
+// Mirror of the keyboard's hardware Game Mode state. Updated whenever the UI
+// toggle changes OR the user presses the dedicated Game Mode key on the
+// keyboard (bitIdx 130 in KeyboardKeyMapping). Used to make the physical
+// key act as a real toggle — without iCUE running, the keyboard fires a
+// notification but does NOT engage the lock itself; the host must echo
+// `setProperty(0xE1)` for the firmware to act.
+let gameModeActive = false;
+
+function setHardwareGameMode(enabled) {
+	// Property 0xE1 on the Vanguard Pro 96 only honours the Bragi-v2 wire
+	// format `[0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value]`. The protocol
+	// class's `Corsair.SetProperty()` emits the older
+	// `[0x00, deviceID|0x08, …]` shape which the v2 firmware silently
+	// ignores for this property. We therefore write the captured iCUE
+	// bytes verbatim (one extra leading 0x00 for the SDK report-ID slot).
+	// Reference: dumps/corsair_keyboard/game_mode_on_off.pcapng frame 9.
+	gameModeActive = !!enabled;
+	device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, gameModeActive ? 0x01 : 0x00], 1024);
+	device.log(`Game Mode ${gameModeActive ? "engaged" : "released"} via v2 setProperty(0xE1)`);
+}
+
 export function ongameModeChanged() {
-	// Game Mode (property 0xE1) on the Vanguard Pro 96 only honours the Bragi-v2
-	// wire format `[0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value]`. The protocol
-	// class's `Corsair.SetProperty()` emits the older `[0x00, deviceID|0x08, …]`
-	// shape which the v2 firmware silently ignores for this property. We
-	// therefore write the captured iCUE bytes verbatim (one extra leading 0x00
-	// for the SDK report-ID slot).
-	//
-	// Reference capture: dumps/corsair_keyboard/game_mode_on_off.pcapng frame 9.
-	const value = gameMode ? 0x01 : 0x00;
-	device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value], 1024);
-	device.log(`Game Mode ${gameMode ? "engaged" : "released"} via v2 setProperty(0xE1)`);
+	setHardwareGameMode(gameMode);
 }
 
 const devFlags = false;
@@ -616,6 +627,15 @@ function processKeyboardMacros(bitIdx, state, keyName) {
 
 	if(FnEnabled) {
 		processFnKeys(eventData.key, state);
+	}
+
+	// The physical Game Mode key fires bitIdx 130 (= "Game Mode") but the
+	// firmware does NOT engage Game Mode itself — it just emits the event
+	// and waits for the host to echo `setProperty(0xE1)`. iCUE does this in
+	// game_mode_on_off.pcapng frame 9. We do the same here, on key DOWN
+	// only, so a single press toggles between engaged and released.
+	if(keyName === "Game Mode" && state) {
+		setHardwareGameMode(!gameModeActive);
 	}
 
 	device.log(`Key ${keyName} is state ${state}`);
@@ -1237,7 +1257,7 @@ class CorsairLibrary{
 			//127 : "",
 			128 : "Profile",
 			//129 : "",
-			//130 : "",
+			130 : "Game Mode",
 			131 : "G1",
 			132 : "G2",
 			133 : "G3",
