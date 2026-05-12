@@ -4,3 +4,4 @@ dumps/
 
 # IDE/agent artifacts
 .claude/
+backups/

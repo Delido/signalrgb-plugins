@@ -6,8 +6,13 @@ export function VendorId() { return 0x1b1c; }
 export function ProductId() { return Object.keys(CorsairLibrary.ProductIDList()); }
 export function Publisher() { return "WhirlwindFX"; }
 export function Documentation(){ return "troubleshooting/corsair"; }
-export function Size() { return [1, 1]; }
-export function DeviceType(){return "dongle";}
+// Both supported PIDs (Vanguard 96, Vanguard Pro 96) are 22x6 keyboards.
+// Returning the real size as default lets SignalRGB initialise its canvas
+// at the correct dimensions, which eliminates the `device.color(): Out of
+// bounds` warnings that fire on the first render before setSize is async-
+// applied.
+export function Size() { return [22, 6]; }
+export function DeviceType(){return "keyboard";}
 export function ImageUrl() { return "https://assets.signalrgb.com/devices/default/misc/usb-drive-render.png"; }
 /* global
 shutdownColor:readonly
@@ -27,16 +32,23 @@ dpiStages:readonly
 ConnectedFans:readonly
 FanControllerArray:readonly
 gameMode:readonly
+flashTap:readonly
 fnHighlightColor:readonly
+rapidTrigger:readonly
+rapidTriggerSensitivity:readonly
+gameModePollRate:readonly
 */
 export function ControllableParameters(){
-	return [
-		{"property":"shutdownColor", "group":"lighting", "label":"Shutdown Color", description: "This color is applied to the device when the System, or SignalRGB is shutting down", "min":"0", "max":"360", "type":"color", "default":"#000000"},
-		{"property":"LightingMode", "group":"lighting", "label":"Lighting Mode", description: "Determines where the device's RGB comes from. Canvas will pull from the active Effect, while Forced will override it to a specific color", "type":"combobox", "values":["Canvas", "Forced"], "default":"Canvas"},
-		{"property":"forcedColor", "group":"lighting", "label":"Forced Color", description: "The color used when 'Forced' Lighting Mode is enabled", "min":"0", "max":"360", "type":"color", "default":"#009bde"},
-		{"property":"gameMode", "group":"", "label":"Game Mode", description: "Toggles the keyboard's hardware Game Mode (Win key + macros disabled, Game Mode LED on). Mirrors what the physical Game Mode key does. Verified on Vanguard Pro 96 via setProperty(0xE1).", "type":"boolean", "default": false},
-		{"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash to while Fn is held down (mirrors iCUE's behaviour). Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
-	];
+    return [
+        {"property":"shutdownColor", "group":"lighting", "label":"Shutdown Color", description: "This color is applied to the device when the System, or SignalRGB is shutting down", "min":"0", "max":"360", "type":"color", "default":"#000000"},
+        {"property":"LightingMode", "group":"lighting", "label":"Lighting Mode", description: "Determines where the device's RGB comes from. Canvas will pull from the active Effect, while Forced will override it to a specific color", "type":"combobox", "values":["Canvas", "Forced"], "default":"Canvas"},
+        {"property":"forcedColor", "group":"lighting", "label":"Forced Color", description: "The color used when 'Forced' Lighting Mode is enabled", "min":"0", "max":"360", "type":"color", "default":"#009bde"},
+        {"property":"gameModeColor", "group":"lighting", "label":"Game Mode Color", description: "The color used when Game Mode is active. Leave at #000000 to use Forced Color setting", "min":"0", "max":"360", "type":"color", "default":"#FF0000"},
+        {"property":"gameModeForceColor", "group":"lighting", "label":"Game Mode Forces Lighting", description: "When enabled, Game Mode will always use Forced Color mode (ignoring Canvas). When disabled, Game Mode respects the Lighting Mode setting", "type":"boolean", "default":"true"},
+        {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash to while Fn is held down (mirrors iCUE's behaviour). Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
+        {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Enables dynamic actuation: keys register based on direction of motion (press vs release) instead of fixed depth. Reduces input lag for fast double-taps. Captured from iCUE bytes — see rapidtrigger_main_*.pcapng.", "type":"boolean", "default":false},
+        {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"Distance the key must move before re-triggering. Lower = more sensitive (faster repeated activation). Range 0.1mm to 1.0mm matches the iCUE UI. Only takes effect while Rapid Trigger is enabled.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
+    ];
 }
 
 // Mirror of the keyboard's hardware Game Mode state. Updated whenever the UI
@@ -46,22 +58,206 @@ export function ControllableParameters(){
 // notification but does NOT engage the lock itself; the host must echo
 // `setProperty(0xE1)` for the firmware to act.
 let gameModeActive = false;
+const FLASHTAP_KEY_INDICES = new Set([56, 58]); // "A" = Index 56, "D" = Index 58
+let fnModeCycleIdx = 0;
 
-function setHardwareGameMode(enabled) {
-	// Property 0xE1 on the Vanguard Pro 96 only honours the Bragi-v2 wire
-	// format `[0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, value]`. The protocol
-	// class's `Corsair.SetProperty()` emits the older
-	// `[0x00, deviceID|0x08, …]` shape which the v2 firmware silently
-	// ignores for this property. We therefore write the captured iCUE
-	// bytes verbatim (one extra leading 0x00 for the SDK report-ID slot).
-	// Reference: dumps/corsair_keyboard/game_mode_on_off.pcapng frame 9.
-	gameModeActive = !!enabled;
-	device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, gameModeActive ? 0x01 : 0x00], 1024);
-	device.log(`Game Mode ${gameModeActive ? "engaged" : "released"} via v2 setProperty(0xE1)`);
+export let flashTap = false;
+export let gameMode = false;
+
+
+// Helper: HID-Consumer-Code repeat-mal als down+up senden (matched Knob-Delta).
+function hidRepeat(steps, code) {
+    for (let i = 0; i < steps; i++) {
+        keyboard.sendHid(code, { released: false });
+        keyboard.sendHid(code, { released: true });
+    }
 }
 
-export function ongameModeChanged() {
-	setHardwareGameMode(gameMode);
+// Drehknopf-Aktionen pro Modus. Jeder Modus mappt einen Firmware-XX-Wert
+// (zeigt das LCD-Label der Tastatur) auf eine JS-Aktion die bei Knob-
+// Drehung ausgelöst wird. XX-Werte + Labels User-bestätigt durch Cyclen.
+// Reihenfolge entspricht iCUE (keyboard_functions.pcapng).
+const KNOB_MODES = [
+    {
+        name: "Media",
+        firmwareXX: 0x41,
+        // Drehen: Skip Forward / Skip Backward (Next/Prev Track).
+        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xB0 : 0xB1),
+        // Klick auf den Knob: Play/Pause (siehe media_prev_next_pauseplay
+        // .pcapng frame 15 — Wheel Key bitIdx 137 fires bei Knob-Push).
+        pushAction: () => hidRepeat(1, 0xB3),
+    },
+    {
+        name: "Vertical Scroll",
+        firmwareXX: 0x3d,
+        // Im Keyboard-Plugin gibt's kein `mouse`-Objekt — Fallback auf
+        // Page Up / Page Down. Funktioniert in Browsern, PDF-Viewern,
+        // Editoren und scrollbaren Listen.
+        //   0x21 = VK_PRIOR (Page Up), 0x22 = VK_NEXT (Page Down)
+        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0x22 : 0x21),
+        pushAction: null,
+    },
+    {
+        name: "Volume",
+        firmwareXX: 0x42,
+        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
+        // Klick auf den Knob: Mute (analog zu iCUE — Volume-Knob-Klick
+        // ist der Standard-Mute-Toggle).
+        pushAction: () => hidRepeat(1, 0xAD),
+    },
+    {
+        name: "Reset",
+        firmwareXX: 0x00,
+        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
+        pushAction: null,
+    },
+];
+let knobModeIdx = 0;
+
+function getKnobMode() {
+    return KNOB_MODES[knobModeIdx];
+}
+
+function cycleFnMode() {
+    knobModeIdx = (knobModeIdx + 1) % KNOB_MODES.length;
+    const mode = getKnobMode();
+    device.log(`Knob Mode cycled to: ${mode.name} (firmware XX=0x${mode.firmwareXX.toString(16)})`);
+
+    // 4-Paket-Sequenz aus iCUE auf conn=0x02 (FNF12.pcapng frames 19/23/27/31).
+    // sendAndRead wartet pro Paket auf den Firmware-ACK, sonst kommt der
+    // writeEndpoint bevor das Handle offen ist und die Firmware verwirft
+    // den Write.
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x3e]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02,
+        0x0b, 0x00, 0x00, 0x00,
+        0x59, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xff,
+        mode.firmwareXX,
+        0x00, 0x00]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
+}
+
+function setHardwareGameMode(enabled) {
+    const requestedState = !!enabled;
+
+    gameModeActive = requestedState;
+    device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, gameModeActive ? 0x01 : 0x00], 1024);
+    device.log(`Game Mode ${gameModeActive ? "engaged" : "released"} via v2 setProperty(0xE1)`);
+
+    if (!gameModeActive && flashTapActive) {
+        device.log(`Game Mode disabled → FlashTap also disabled`);
+        flashTapActive = false;
+    }
+
+    // Falls FlashTap im UI gesetzt ist, aber Game Mode vorher aus war:
+    if (gameModeActive && flashTap && !flashTapActive) {
+        setHardwareFlashTap(true);
+    }
+
+    // Auto-Switch der Polling Rate je nach Mode. Schreibt nur wenn:
+    //   - settingControl aktiv (User will dass wir das managen)
+    //   - die Ziel-Rate für den neuen Mode definiert ist
+    //   - sie sich vom zuletzt geschriebenen Wert unterscheidet (sonst
+    //     unnötiger USB-Reboot bei jedem GM-Toggle)
+    // Wenn User für beide Modi denselben Wert setzt → kein Reboot.
+    if (typeof settingControl !== "undefined" && settingControl) {
+        const targetRate = gameModeActive
+            ? (typeof gameModePollRate === "string" ? gameModePollRate : null)
+            : (typeof PollRate === "string" ? PollRate : null);
+        if (targetRate && targetRate !== _lastWrittenPollRate) {
+            device.log(`Game Mode toggle → switching Polling Rate to [${targetRate}]`);
+            setPollRate(targetRate);
+        }
+    }
+
+    refreshKeyboardLighting();
+}
+
+// Mirror of the keyboard's hardware FlashTap (SOCD) state. Same pattern as
+// `gameModeActive`: kept in sync with both the UI toggle and the physical
+// Fn + Right Shift chord on the keyboard.
+let flashTapActive = false;
+
+function setHardwareFlashTap(enabled) {
+    if (!gameModeActive) {
+        device.log(`FlashTap ${enabled ? "engage" : "release"} attempted but Game Mode is OFF — write will be IGNORED by the keyboard.`);
+        return;
+    }
+
+    // FlashTap toggle: setProperty(propID=0x0100 LE16, value) on conn=0x02.
+    // Bytes captured verbatim from
+    // dumps/corsair_keyboard/flashtap_engage_disengage.pcapng (frame 1039
+    // ENGAGE, frame 1051 DISENGAGE — same iCUE session, current firmware).
+    // Earlier guess of conn=0x03 was wrong: ENGAGE happened to take effect
+    // there too (firmware tolerance) but DISENGAGE was silently dropped,
+    // so the LCD got stuck in the on state. iCUE itself uses conn=0x02 for
+    // both directions.
+    flashTapActive = !!enabled;
+    device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0x00, 0x01, flashTapActive ? 0x01 : 0x00], 1024);
+    device.log(`FlashTap ${flashTapActive ? "engaged" : "released"} via setProperty(0x0100) on conn=0x02`);
+
+    refreshKeyboardLighting();
+}
+
+function refreshKeyboardLighting() {
+    if (wiredDevice) {
+        UpdateRGB(wiredDevice);
+    }
+
+    if (BragiDongle) {
+        for (const [key, value] of BragiDongle.children) {
+            UpdateRGB(value, key);
+        }
+    }
+}
+
+// Rapid-Trigger / Key-Actuation Konfiguration. iCUE bündelt alle
+// Tasten-Betätigungs-Settings in einem 14-byte writeEndpoint auf
+// endpoint 0x48 (handle 0x02, conn=0x02). Aus den Captures:
+//   rapidtrigger_main_disable.pcapng + main_enable.pcapng:
+//     byte 10 = Rapid Trigger Enable Flag
+//   rapidtrigger_sensitivity_1.0mm.pcapng vs main_enable (=0.1mm):
+//     bytes 12 + 13 = Press/Release-Sensitivity in 1/10mm
+// Die anderen Bytes (3, 5, 6, 7, 9, 11) gehören zu Primärer/Sekundärer/
+// Reset-Konfiguration und werden hier mit den iCUE-Default-Werten
+// (Primary=2.0mm, Sekundär OFF) gesendet. Wir senden bei jedem UI-Change.
+function writeRapidTriggerConfig() {
+    const sensitivityValue = (typeof rapidTriggerSensitivity === "string")
+        ? parseFloat(rapidTriggerSensitivity) : Number(rapidTriggerSensitivity);
+    const sens10 = Math.max(1, Math.min(10, Math.round(sensitivityValue * 10)));
+    const rtFlag = rapidTrigger ? 0x01 : 0x00;
+
+    // 14-byte Payload — Template aus rapidtrigger_main_enable.pcapng frame 9
+    const payload = [
+        0x63, 0x00, 0x01,
+        0x14,         // byte 3: Primärer Betätigungspunkt = 2.0mm
+        0x00,
+        0x13,         // byte 5: iCUE-default (Sekundärwert/Clamp)
+        0x00,         // byte 6: Sekundärer Bestätigungspunkt = OFF
+        0x25, 0x00, 0x22,  // bytes 7-9: iCUE-defaults
+        rtFlag,       // byte 10: Rapid Trigger Enable
+        0x14,         // byte 11: duplicate of byte 3
+        sens10,       // byte 12: Press Sensitivity (×10 mm)
+        sens10,       // byte 13: Release Sensitivity (×10 mm, identisch wenn Separate Sens AUS)
+    ];
+
+    // 4-Paket-Sequenz: open / check / write / close auf handle=0x02, endpoint=0x48
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x48]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02,
+        0x0e, 0x00, 0x00, 0x00].concat(payload));
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
+
+    device.log(`Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity`);
+}
+
+export function onrapidTriggerChanged() {
+    writeRapidTriggerConfig();
+}
+
+export function onrapidTriggerSensitivityChanged() {
+    writeRapidTriggerConfig();
 }
 
 const devFlags = false;
@@ -111,8 +307,25 @@ export function ondpi6Changed() {
 }
 
 export function onPollRateChanged() {
-	if(settingControl) {
+	// Schreibt die Normal-Modus-Rate nur wenn wir gerade NICHT im Game
+	// Mode sind. Im GM ist die GM-Rate aktiv — die Normal-Rate wird beim
+	// nächsten Verlassen von Game Mode automatisch übernommen (siehe
+	// setHardwareGameMode).
+	if(settingControl && !gameModeActive) {
 		setPollRate(PollRate);
+	} else if (settingControl && gameModeActive) {
+		device.log(`Polling Rate (Normal) changed to [${PollRate}] but currently in Game Mode — wird beim Verlassen von Game Mode aktiv.`);
+	}
+}
+
+export function ongameModePollRateChanged() {
+	// Schreibt die Game-Mode-Rate nur wenn wir gerade IM Game Mode sind.
+	// Außerhalb wird's beim nächsten Aktivieren von Game Mode automatisch
+	// übernommen.
+	if(settingControl && gameModeActive) {
+		setPollRate(gameModePollRate);
+	} else if (settingControl && !gameModeActive) {
+		device.log(`Polling Rate (Game Mode) changed to [${gameModePollRate}] but Game Mode is OFF — wird beim Aktivieren von Game Mode aktiv.`);
 	}
 }
 
@@ -138,26 +351,47 @@ export function Validate(endpoint) {
 export function Initialize() {
 	device.set_endpoint(0x03, 0x02, 0xFF42);
 
-	//Vanguard explodes on reloads if you don't do this
 	device.write([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0x14, 0x64, 0x35, 0x52], 1024);
-
 	device.set_endpoint(0x02, 0x01, 0xFF42);
 
 	sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0x3d, 0x78, 0xaf, 0x8b]);
-
 	sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xcf, 0xde, 0x51, 0x08]);
-
 	sendAndRead([0x00, 0x00, 0x01, 0x02, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
-
 	sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xbf, 0xe4, 0x19, 0x3a]);
-	//Mfw the solution is just setting software mode twice.
-	//The firmware for this keyboard is built on thoughts and prayers.
 	sendAndRead([0x00, 0x00, 0x01, 0x02, 0x01, 0x03, 0x00, 0x02]);
 
 	Corsair.SetMode("Software", 1);
 	Corsair.FetchDeviceInformation();
 	fetchAndConfigureChildren();
+
+	// ✅ Callback wird VOR refreshKeyboardLighting() registriert
+	device.log("Registering macro input callback...");
 	macroInputArray.setCallback((bitIdx, isPressed) => { return processMacroInputs(bitIdx, isPressed); });
+	device.log("Macro input callback registered successfully.");
+
+	// Aktuellen Hardware-State von der Tastatur lesen, damit unser Plugin
+	// synchron ist falls Game Mode / FlashTap schon physisch eingeschaltet
+	// wurden bevor SignalRGB lief. Property-IDs aus init_with_gamemode_on/off
+	// captures: 0xE1 = Game Mode, 0x0100 = FlashTap. FetchProperty gibt
+	// 0/1 zurück oder -1 bei Fehler.
+	try {
+		const gmState = Corsair.FetchProperty(0xE1, 1);
+		if (gmState === 0 || gmState === 1) {
+			gameModeActive = (gmState === 1);
+			device.log(`Detected initial Game Mode state: ${gameModeActive ? "ON" : "OFF"}`);
+		}
+	} catch (e) { device.log(`Game Mode state detection failed: ${e}`); }
+	try {
+		const ftState = Corsair.FetchProperty(0x0100, 1);
+		if (ftState === 0 || ftState === 1) {
+			flashTapActive = (ftState === 1);
+			device.log(`Detected initial FlashTap state: ${flashTapActive ? "ON" : "OFF"}`);
+		}
+	} catch (e) { device.log(`FlashTap state detection failed: ${e}`); }
+
+	if (gameMode) setHardwareGameMode(gameMode);
+	if (flashTap) setHardwareFlashTap(flashTap);
+	refreshKeyboardLighting();
 }
 
 function sendAndRead(packet) {
@@ -169,6 +403,14 @@ function sendAndRead(packet) {
 let subdevicesEditedLastFrame = false;
 
 export function Render() {
+	// Polling-Rate-Wechsel löst USB-Re-Enumeration aus (~5s). In dieser
+	// Zeit ist der device-Handle in unsicherem Zustand — wir bailen aus
+	// dem Render-Loop bis die Grace-Period abgelaufen ist, sonst crasht
+	// SignalRGB auf einem toten Handle.
+    if (Date.now() < pollRateRebootUntil) {
+        return;
+    }
+
 	readDeviceNotifications();
 
 	if(subdevicesEditedLastFrame) {
@@ -182,25 +424,36 @@ export function Render() {
 		PollDeviceState();
 		UpdateRGB(wiredDevice);
 	}
+}
 
-	if(BragiDongle) {
-		PollDeviceMode();
-		PollDeviceState(); //this one pings the dongle. I could have it ping the device but I don't see a need.
-
-		for(const [key, value] of BragiDongle.children){
-			PollDeviceMode(key);
-			PollDeviceState(key);
-			UpdateRGB(value, key);
-		}
-	}
+// Bragi-v2 Hardware-Mode-Switch für Vanguard 96 / Vanguard Pro 96.
+// Captured aus dumps/corsair_keyboard/back_to_hardware_modus.pcapng:
+//   Frame 7: setProperty(mode=0x03, value=0x01 Hardware) auf conn=0x03
+//   Frame 11: Session-Reset `0x1B 02 ... 03` auf conn=0x03
+// Das legacy Corsair.SetMode("Hardware") (deviceID|0x08) hat auf der v2-
+// Firmware der Vanguard-Familie keine Wirkung — die Tastatur bleibt im
+// Software-Mode hängen, was Fn+F12 / Drehknopf etc. auch nach Plugin-
+// Disable kaputt lässt.
+function switchToHardwareModeV2() {
+    // sendAndRead statt device.write — iCUE wartet zwischen den beiden
+    // Paketen auf den Firmware-ACK (siehe back_to_hardware_modus.pcapng
+    // frame 7 → response → frame 11). Ohne ACK-Wait kommt der zweite
+    // Write zu früh und die Firmware verwirft den Session-Reset.
+    sendAndRead([0x00, 0x00, 0x01, 0x03, 0x01, 0x03, 0x00, 0x01]);
+    sendAndRead([0x00, 0x00, 0x01, 0x03, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
+    device.log("Switched to Hardware mode via v2 protocol (conn=0x03)");
 }
 
 export function Shutdown(SystemSuspending) {
+	device.log(`Shutdown called (SystemSuspending=${SystemSuspending})`);
 	if(SystemSuspending){
 		// Go Dark on System Sleep/Shutdown
 		if(wiredDevice) {
 			UpdateRGB(wiredDevice, undefined, "#000000");
-			Corsair.SetMode("Hardware");
+			switchToHardwareModeV2();
+			// Legacy Corsair.SetMode("Hardware") absichtlich NICHT mehr für
+			// wiredDevice — der nutzt deviceID|0x08 (byte2=0x09) was die
+			// v2-Firmware nicht versteht und unseren Switch kippen kann.
 		}
 
 		if(BragiDongle){
@@ -212,7 +465,7 @@ export function Shutdown(SystemSuspending) {
 	}else{
 		if(wiredDevice) {
 			UpdateRGB(wiredDevice, undefined, shutdownColor);
-			Corsair.SetMode("Hardware");
+			switchToHardwareModeV2();
 		}
 
 		if(BragiDongle){
@@ -448,120 +701,155 @@ function ProcessInput(InputData){
 	}
 
 	if(InputData[4] === 5) {
-		if(InputData[5] === 1) {
-			keyboard.sendHid(0xAF, {released : false});
-			keyboard.sendHid(0xAF, {released : true});
-		} else if (InputData[5] === 255) {
-			keyboard.sendHid(0xAE, {released : false});
-			keyboard.sendHid(0xAE, {released : true});
+		// Rotary-Notification vom Vanguard Pro 96:
+		// `00 00 00 05 60 00 <delta-LE32>` auf interface 3 (notification ep).
+		// InputData ist um 1 vorgeschoben → byte 5 = 0x60 (Wheel-Button-ID),
+		// byte 6 = 0x00 (padding), bytes 7-10 = signed LE32 Delta.
+		// `0x01000000` = +1 (rechts), `0xffffffff` = -1 (links).
+		// Welche Aktion bei +/- gefeuert wird steht im KNOB_MODE — wird
+		// via Fn+F12 gecycled (cycleFnMode).
+		const delta = BinaryUtils.ReadInt32LittleEndian(InputData.slice(7, 11));
+		const mode = getKnobMode();
+		if (mode.action) {
+			mode.action(delta);
 		}
 	}
 }
 //1, 2, 4, 8
 //02, 06, 14, 15
 
-function setWinLockToggles(keys, deviceId) {
-	Corsair.SetProperty(Corsair.properties.LockedShortcuts, 0x02, deviceId);
-}
-
-function setWinLock(enabled, deviceId) {
-	winLockEnabled = !winLockEnabled;
-	Corsair.SetProperty(Corsair.properties.WinLockState, enabled, deviceId);
-}
-
 let winLockEnabled = false;
+
+// WinLock-Toggle via Bragi-v2 setProperty. Die Vanguard Pro 96 trennt
+// „normales WinLock" und „WinLock im Game Mode" auf zwei separate
+// Properties + Connections (captured byte-genau):
+//   propID=0x45 auf conn=0x03 = WinLock wenn Game Mode AUS
+//       (FNWIN_disable_win_key.pcapng frames 21 ON / 145 OFF)
+//   propID=0xEB auf conn=0x02 = WinLock wenn Game Mode AN
+//       (FNWIN_disable_win_key_ingamemode.pcapng frames 21 ON / 53 OFF)
+// Die Firmware verwaltet die zwei Slots unabhängig — und der wirksame
+// Slot wechselt wenn Game Mode toggled wird. Um Inkonsistenzen zu
+// vermeiden schreiben wir bei jedem Toggle BEIDE Slots auf den gleichen
+// Wert. Dann ist der WinLock-State Game-Mode-unabhängig konsistent.
+// Legacy Corsair.SetProperty() greift auf der v2-Firmware nicht.
+function setWinLock(enabled) {
+	winLockEnabled = !!enabled;
+	const val = winLockEnabled ? 0x01 : 0x00;
+	// Slot 1: GM-AUS-WinLock (propID 0x45 auf conn=0x03)
+	device.write([0x00, 0x00, 0x01, 0x03, 0x01, 0x45, 0x00, val], 1024);
+	// Slot 2: GM-AN-WinLock (propID 0xEB auf conn=0x02)
+	device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xEB, 0x00, val], 1024);
+	device.log(`WinLock ${winLockEnabled ? "engaged" : "released"} (both slots written: 0x45@conn=0x03 + 0xEB@conn=0x02)`);
+}
 
 /* eslint-disable complexity */
 function processFnKeys(key, isPressed) {
-	//This is going to snowball HARD.
-	//We have to be careful about how we try and maintain this.
-	//I may break it out into its own class, and add library entries for things like the winlock light, and different keymaps.
-	//This most likely is going to end up like Logitech does with a button map lib.
-	switch(key) {
+    //This is going to snowball HARD.
+    //We have to be careful about how we try and maintain this.
+    //I may break it out into its own class, and add library entries for things like the winlock light, and different keymaps.
+    //This most likely is going to end up like Logitech does with a button map lib.
+    // Fn-Media-Layer auf dem Vanguard Pro 96 (gemäß Tastenbeschriftung):
+    //   F6 = |◀ Skip Back, F7 = ▶|| Play/Pause, F8 = ▶| Skip Forward
+    //   F9 = Mute, F10 = Vol Down, F11 = Vol Up, F12 = Fn-Mode-Cycle
+    //   Fn + Left Win = WinLock toggle, Lock-Taste = WinLock toggle
+    // Rückgabewert: true wenn das Event von uns konsumiert wurde — dann
+    // muss processKeyboardMacros das Event NICHT an Windows weiterleiten
+    // (sonst öffnet z.B. Fn+Win das Start-Menü trotz WinLock-Toggle).
+    // F1–F5 sind nicht eindeutig belegt — kein sendHid, kein consume.
+    switch(key) {
 
-	case "F1" :
-		if(isPressed) {
-			setWinLock(winLockEnabled, macroSubdeviceID);
-			device.log(`Winlock set to ${winLockEnabled}`);
-		}
+    case "F6":
+        device.log("Skip Backward");
+        keyboard.sendHid(0xB1, {released: !isPressed});
+        return true;
 
-		break;
+    case "F7":
+        device.log("Play/Pause");
+        keyboard.sendHid(0xB3, {released: !isPressed});
+        return true;
 
-	case "F5" :
-		device.log("Toggling Mute");
-		keyboard.sendHid(0xAD, {released : !isPressed});
-		break;
+    case "F8":
+        device.log("Skip Forward");
+        keyboard.sendHid(0xB0, {released: !isPressed});
+        return true;
 
-	case "F7" :
-		device.log("Volume Down");
-		keyboard.sendHid(0xAE, {released : !isPressed});
-		break;
+    case "F9":
+        device.log("Mute");
+        keyboard.sendHid(0xAD, {released: !isPressed});
+        return true;
 
-	case "F8" :
-		device.log("Volume Up");
-		keyboard.sendHid(0xAF, {released : !isPressed});
-		break;
+    case "F10":
+        device.log("Volume Down");
+        keyboard.sendHid(0xAE, {released: !isPressed});
+        return true;
 
-	case "F9" :
-		device.log("Stop");
-		keyboard.sendHid(0xB2, {released : !isPressed});
-		break;
+    case "F11":
+        device.log("Volume Up");
+        keyboard.sendHid(0xAF, {released: !isPressed});
+        return true;
 
-	case "F10" :
-		device.log("Rewind Track");
-		keyboard.sendHid(0xB1, {released : !isPressed});
-		break;
+    case "F12":
+        if(isPressed) {
+            cycleFnMode();
+        }
+        return true;
 
-	case "F11" :
-		device.log("Play/Pause");
-		keyboard.sendHid(0xB3, {released : !isPressed});
-		break;
+    case "Left Win":
+        // Fn + Linke Windows-Taste = WinLock toggle. Bytes captured in
+        // dumps/corsair_keyboard/FNWIN_disable_win_key.pcapng (frame 21
+        // ON, frame 145 OFF) — setProperty(0x45, value) on conn=0x03.
+        if(isPressed) {
+            setWinLock(!winLockEnabled);
+            refreshKeyboardLighting();
+        }
+        return true;
 
-	case "F12" :
-		device.log("Skip Track");
-		keyboard.sendHid(0xB0, {released : !isPressed});
-		break;
-
-	case "Lock":
-		if(isPressed) {
-			setWinLock(winLockEnabled, macroSubdeviceID);
-			device.log(`Winlock set to ${winLockEnabled}`);
-		}
-	}
+    case "Lock":
+        if(isPressed) {
+            setWinLock(!winLockEnabled);
+            refreshKeyboardLighting();
+        }
+        return true;
+    }
+    return false;
 }
 /* eslint-enable complexity */
 
 let FnEnabled = false;
 
 function processMacroInputs(bitIdx, state) {
-	device.set_endpoint(0x02, 0x01, 0xFF42);
+    device.set_endpoint(0x02, 0x01, 0xFF42);
 
-	let deviceType;
-	let buttonMapType;
+    let deviceType;
+    let buttonMapType;
 
-	if(macroSubdeviceID === 0) {
-		deviceType = wiredDevice?.keymapType;
-		buttonMapType = wiredDevice?.buttonMap;
-	} else {
-		deviceType = BragiDongle?.children.get(macroSubdeviceID).keymapType;
-		buttonMapType = BragiDongle?.children.get(macroSubdeviceID).buttonMap;
-		//"fixed" the button map problem. It's not the cleanest solution but should get us where we need to go.
-	}
+    // ✅ Wenn macroSubdeviceID === 0 ODER wir haben kein BragiDongle, nutze wiredDevice
+    if(macroSubdeviceID === 0 || !BragiDongle) {
+        if (!wiredDevice) {
+            device.log(`[processMacroInputs] wiredDevice is undefined (not yet initialized). Skipping macro processing.`);
+            return;
+        }
+        deviceType = wiredDevice.keymapType;
+        buttonMapType = wiredDevice.buttonMap;
+    } else {
+        const subdevice = BragiDongle.children.get(macroSubdeviceID);
+        if (!subdevice) {
+            device.log(`[processMacroInputs] Subdevice ${macroSubdeviceID} not found in BragiDongle. Skipping macro processing.`);
+            return;
+        }
+        deviceType = subdevice.keymapType;
+        buttonMapType = subdevice.buttonMap;
+    }
 
-	const keyName = CorsairLibrary.GetKeyMapping(bitIdx, deviceType, buttonMapType);
+    const keyName = CorsairLibrary.GetKeyMapping(bitIdx, deviceType, buttonMapType);
 
-	if(deviceType === "Mouse") {
-		//device.log(`Key Pressed: ${bitIdx}`);
-	}
-
-	if(keyName !== undefined) {
-		if(deviceType === "Keyboard") {
-			processKeyboardMacros(bitIdx, state, keyName);
-
-		} else if(deviceType === "Mouse") {
-			processMouseMacros(bitIdx, state, keyName);
-		}
-	}
+    if(keyName !== undefined) {
+        if(deviceType === "Keyboard") {
+            processKeyboardMacros(bitIdx, state, keyName);
+        } else if(deviceType === "Mouse") {
+            processMouseMacros(bitIdx, state, keyName);
+        }
+    }
 }
 
 function processMouseMacros(bitIdx, state, keyName) {
@@ -625,8 +913,14 @@ function processKeyboardMacros(bitIdx, state, keyName) {
 		FnEnabled = state;
 	}
 
+	// Wenn ein Fn-Layer-Key (F6-F12, Left Win, Lock) gedrückt wird,
+	// konsumiert processFnKeys das Event und gibt true zurück. In dem Fall
+	// leiten wir das Event NICHT an Windows weiter — sonst kommt die rohe
+	// F-Taste / Win-Taste durch und Start-Menü öffnet sich beim WinLock-
+	// Toggle, F-Tasten triggern „Skip Backward"-artige Fehlinterpretationen.
+	let consumed = false;
 	if(FnEnabled) {
-		processFnKeys(eventData.key, state);
+		consumed = processFnKeys(eventData.key, state) === true;
 	}
 
 	// The physical Game Mode key fires bitIdx 130 (= "Game Mode") but the
@@ -635,12 +929,37 @@ function processKeyboardMacros(bitIdx, state, keyName) {
 	// game_mode_on_off.pcapng frame 9. We do the same here, on key DOWN
 	// only, so a single press toggles between engaged and released.
 	if(keyName === "Game Mode" && state) {
-		setHardwareGameMode(!gameModeActive);
+		const newState = !gameModeActive;
+		setHardwareGameMode(newState);
+		consumed = true;
 	}
 
-	device.log(`Key ${keyName} is state ${state}`);
-	keyboard.sendEvent(eventData, "Key Press");
+	// Fn + Right Shift toggles FlashTap (SOCD). Same pattern: the keyboard
+	// emits a Right-Shift-down event while Fn is held but waits for the
+	// host to echo `setProperty(0x0001)` on conn=0x03 to actually engage
+	// the feature. Reference: flashtab_on_then_off.pcapng frames 23 / 25.
+	if(keyName === "Right Shift" && state && FnEnabled) {
+		const newState = !flashTapActive;
 
+		setHardwareFlashTap(newState);
+		consumed = true;
+	}
+
+	// Knob-Klick (Wheel Key, bitIdx 137) → modus-abhängige Aktion. iCUE
+	// fired Play/Pause im Media-Modus, Mute im Volume-Modus. Nur auf
+	// press (state=true) reagieren, sonst kommt der Event doppelt.
+	if(keyName === "Wheel Key" && state) {
+		const mode = getKnobMode();
+		if (mode.pushAction) {
+			mode.pushAction();
+		}
+		consumed = true;
+	}
+
+	device.log(`Key ${keyName} is state ${state}${consumed ? " (consumed)" : ""}`);
+	if (!consumed) {
+		keyboard.sendEvent(eventData, "Key Press");
+	}
 }
 
 function configureMouseButtons(deviceID) { //TODO: Rewrite this properly once I get user confirmation of functionality.
@@ -865,39 +1184,77 @@ function PollDeviceState(deviceID = 1){
 }
 
 function addPollingRates(deviceId, isMouse = false) {
-	let maxPollingRate = Corsair.FetchProperty(Corsair.properties.maxPollingRate, 0); //deviceId is omitted here because if we connect with a dongle, it will check the device's max rate instead of the dongle's.
+    const currentPollingRate = Corsair.FetchProperty(Corsair.properties.pollingRate, deviceId);
+    let maxPollingRate = Corsair.FetchProperty(Corsair.properties.maxPollingRate, deviceId);
 
-	if(maxPollingRate === -1){
-		maxPollingRate = Corsair.pollingRateNames["1000hz"];
-	}
+    if(maxPollingRate === -1){
+        maxPollingRate = Corsair.pollingRateNames["1000hz"];
+    }
 
-	const pollingRateValues = [];
+    const pollingRateValues = [];
 
-	for(let pollingRateValueCount = 1; pollingRateValueCount < maxPollingRate + 1; pollingRateValueCount++) {
-		pollingRateValues.push(Corsair.pollingRates[pollingRateValueCount]);
-	}
+    for(let pollingRateValueCount = 1; pollingRateValueCount < maxPollingRate + 1; pollingRateValueCount++) {
+        pollingRateValues.push(Corsair.pollingRates[pollingRateValueCount]);
+    }
 
+    let defaultRate = "1000hz";
 
-	device.addProperty({ "property": "settingControl", "group": isMouse ? "mouse" : "", "label": "Enable Setting Control", description: "SignalRGB will not attempt to set mouse settings like DPI and Polling Rate while this is disabled", "type": "boolean", "default": "false", "order": 1 });
-	device.addProperty({"property": "PollRate", "group": isMouse ? "mouse" : "", "label": "Polling Rate", description: "Sets the Polling Rate of this device", "type": "combobox", "values": pollingRateValues, "default": "1000hz" });
+    if(currentPollingRate > 0 && Corsair.pollingRates[currentPollingRate]) {
+        defaultRate = Corsair.pollingRates[currentPollingRate];
+    } else if (typeof PollRate === "string" && pollingRateValues.includes(PollRate)) {
+        defaultRate = PollRate;
+    }
+
+    device.addProperty({ "property": "settingControl", "group": isMouse ? "mouse" : "", "label": "Enable Setting Control", description: "Required for SignalRGB to actually push DPI / Polling Rate changes to the keyboard. Off by default to avoid surprising firmware writes; turn on once you've decided you want SignalRGB managing those values.", "type": "boolean", "default": "false", "order": 1 });
+    device.addProperty({"property": "PollRate", "group": isMouse ? "mouse" : "", "label": "Polling Rate (Normal)", description: "Polling rate used when Game Mode is OFF. Each rate change reboots the keyboard (~5s). Only applied while Enable Setting Control is on.", "type": "combobox", "values": pollingRateValues, "default": defaultRate });
+    device.addProperty({"property": "gameModePollRate", "group": isMouse ? "mouse" : "", "label": "Polling Rate (Game Mode)", description: "Polling rate used while Game Mode is ON. Auto-switched when Game Mode toggles. Set the same as the normal rate to avoid USB re-enumeration on every Game Mode toggle.", "type": "combobox", "values": pollingRateValues, "default": defaultRate });
+
+    // Initial-State: was die Tastatur gerade tatsächlich fährt. Verhindert
+    // dass wir bei Plugin-Reload sofort unnötig einen Reboot triggern, nur
+    // weil _lastWrittenPollRate sonst undefined wäre.
+    if (currentPollingRate > 0 && Corsair.pollingRates[currentPollingRate]) {
+        _lastWrittenPollRate = Corsair.pollingRates[currentPollingRate];
+    }
 }
 
-function setPollRate(pollRate) {
+// Wann der letzte Polling-Rate-Write den USB-Reboot ausgelöst hat. Render
+// hält für die Dauer dieses Grace-Periods die Klappe, damit es nicht in
+// einen toten device-Handle schreibt und SignalRGB crasht.
+let pollRateRebootUntil = 0;
+const POLL_RATE_REBOOT_GRACE_MS = 6000;
 
-	const pollingRateId = Corsair.pollingRateNames[pollRate];
+// Letzter Rate-Wert den wir aktiv auf die Tastatur geschrieben haben.
+// Wird bei Init aus FetchProperty (currentPollingRate in addPollingRates)
+// vorbelegt. Nutzen wir um redundante Writes zu vermeiden — jeder Write
+// löst eine ~5s USB-Re-Enumeration aus.
+let _lastWrittenPollRate = null;
 
-	device.log(`Setting Polling Rate to [${pollRate}, ${pollingRateId}]`);
+function setPollRate(pollRate, deviceID = 1) {
+    const pollingRateId = Corsair.pollingRateNames[pollRate];
 
-	const CurrentValue = Corsair.FetchProperty("Polling Rate");
+    if (pollingRateId === undefined) {
+        device.log(`Unknown polling rate label [${pollRate}]; ignoring.`);
+        return;
+    }
 
-	if(CurrentValue === pollingRateId){
-		return;
-	}
+    if (pollRate === _lastWrittenPollRate) {
+        device.log(`Polling Rate already at [${pollRate}] — skip write to avoid unnecessary reboot.`);
+        return;
+    }
 
-	device.log(`Device "Polling Rate" is currently [${CurrentValue}]. Desired Value is [${pollingRateId}]. Setting Property!`);
-
-	Corsair.SetProperty("Polling Rate", pollingRateId);
-	// Device Disconnect, Error Thrown, We're done here.
+    // Bragi-v2 setProperty(0x01 = pollingRate) on conn=0x02. Die Vanguard
+    // Pro 96 nimmt die Änderung nur im Game Mode an (außerhalb wird das
+    // Paket still verworfen). Sobald greift, rebootet sie ~5s lang per
+    // USB-Re-Enumeration — Render muss in der Zeit pausieren sonst
+    // crasht SignalRGB auf einem toten Device-Handle.
+    device.log(`Setting Polling Rate to [${pollRate}, id=${pollingRateId}] — entering ${POLL_RATE_REBOOT_GRACE_MS}ms grace period`);
+    pollRateRebootUntil = Date.now() + POLL_RATE_REBOOT_GRACE_MS;
+    _lastWrittenPollRate = pollRate;
+    try {
+        device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0x01, 0x00, pollingRateId & 0xFF], 1024);
+    } catch (e) {
+        device.log(`setPollRate write threw: ${e}`);
+    }
 }
 
 function UpdateRGB(childDevice, deviceID, overrideColor){
@@ -922,37 +1279,52 @@ function getColors(childDevice, overrideColor, isLightingController) {
 
 function getStandardColors(deviceConfig, overrideColor, subdevice = false){
 
-	if(!deviceConfig){
-		throw new Error(`Device config is undefined. Is this a supported mouse?`);
-	}
+    if(!deviceConfig){
+        throw new Error(`Device config is undefined. Is this a supported mouse?`);
+    }
 
-	const RGBData = new Array(deviceConfig.ledSpacing * 3);
+    const RGBData = new Array(deviceConfig.ledSpacing * 3);
+    
+    // ✅ FlashTap Highlight Farbe (Weiß)
+    const flashTapHighlight = flashTapActive ? [255, 255, 255] : null;
 
-	for(let iIdx = 0; iIdx < deviceConfig.ledPositions.length; iIdx++) {
-		const ledPosition = deviceConfig.ledPositions[iIdx];
+    for(let iIdx = 0; iIdx < deviceConfig.ledPositions.length; iIdx++) {
+        const ledPosition = deviceConfig.ledPositions[iIdx];
 
-		if(ledPosition === undefined){
-			throw new Error(`Device Led Position [${iIdx}] is undefined!`);
-		}
+        if(ledPosition === undefined){
+            throw new Error(`Device Led Position [${iIdx}] is undefined!`);
+        }
 
-		let col;
+        let col;
 
-		if(overrideColor){
-			col = hexToRgb(overrideColor);
-		}else if (LightingMode === "Forced") {
-			col = hexToRgb(forcedColor);
-		}else{
-			col = subdevice ? device.subdeviceColor(deviceConfig.name, ledPosition[0], ledPosition[1]) : device.color(ledPosition[0], ledPosition[1]);
-		}
+        if(overrideColor){
+            col = hexToRgb(overrideColor);
+        }
+        // ✅ FlashTap Keys ZUERST checken (höchste Priorität!)
+        else if (flashTapHighlight && FLASHTAP_KEY_INDICES.has(iIdx)) {
+            col = flashTapHighlight;
+        }
+        // ✅ Game Mode: Forced Color wenn gameModeForceColor=true
+        else if (gameModeActive && gameModeForceColor) {
+            col = gameModeColor && gameModeColor !== "#000000" 
+                ? hexToRgb(gameModeColor) 
+                : hexToRgb(forcedColor);
+        }
+        else if (LightingMode === "Forced") {
+            col = hexToRgb(forcedColor);
+        }
+        else{
+            col = subdevice ? device.subdeviceColor(deviceConfig.name, ledPosition[0], ledPosition[1]) : device.color(ledPosition[0], ledPosition[1]);
+        }
 
-		const ledIdx = deviceConfig.ledMap[iIdx];
+        const ledIdx = deviceConfig.ledMap[iIdx];
 
-		RGBData[ledIdx] = col[0];
-		RGBData[ledIdx + deviceConfig.ledSpacing] = col[1];
-		RGBData[ledIdx + deviceConfig.ledSpacing * 2] = col[2];
-	}
+        RGBData[ledIdx] = col[0];
+        RGBData[ledIdx + deviceConfig.ledSpacing] = col[1];
+        RGBData[ledIdx + deviceConfig.ledSpacing * 2] = col[2];
+    }
 
-	return RGBData;
+    return RGBData;
 }
 
 // Keys that get highlighted with `fnHighlightColor` while the Fn key is held —
@@ -968,42 +1340,74 @@ const FN_LAYER_HIGHLIGHT_NAMES = new Set([
 ]);
 
 function getLightingControllerColors(deviceConfig, overrideColor, subdevice = false) {
-	if(!deviceConfig){
-		throw new Error(`Device config is undefined. Is this a supported mouse?`);
-	}
+    if(!deviceConfig){
+        throw new Error(`Device config is undefined. Is this a supported mouse?`);
+    }
 
-	const RGBData = new Array(deviceConfig.ledMap.length * 3);
-	const fnHighlight = (FnEnabled && fnHighlightColor && fnHighlightColor !== "#000000")
-		? hexToRgb(fnHighlightColor)
-		: null;
+    const RGBData = new Array(deviceConfig.ledMap.length * 3);
+    const fnHighlight = (FnEnabled && fnHighlightColor && fnHighlightColor !== "#000000")
+        ? hexToRgb(fnHighlightColor)
+        : null;
+    
+    // ✅ FlashTap Highlight Farbe (Weiß)
+    const flashTapHighlight = flashTapActive ? [255, 255, 255] : null;
 
-	for(let iIdx = 0; iIdx < deviceConfig.ledPositions.length; iIdx++) {
-		const ledPosition = deviceConfig.ledPositions[iIdx];
+    for(let iIdx = 0; iIdx < deviceConfig.ledPositions.length; iIdx++) {
+        const ledPosition = deviceConfig.ledPositions[iIdx];
 
-		if(ledPosition === undefined){
-			throw new Error(`Device Led Position [${iIdx}] is undefined!`);
-		}
+        if(ledPosition === undefined){
+            throw new Error(`Device Led Position [${iIdx}] is undefined!`);
+        }
 
-		let col;
+        let col;
 
-		if(overrideColor){
-			col = hexToRgb(overrideColor);
-		}else if (fnHighlight && deviceConfig.ledNames && FN_LAYER_HIGHLIGHT_NAMES.has(deviceConfig.ledNames[iIdx])) {
-			col = fnHighlight;
-		}else if (LightingMode === "Forced") {
-			col = hexToRgb(forcedColor);
-		}else{
-			col = subdevice? device.subdeviceColor(deviceConfig.name, ledPosition[0], ledPosition[1]) : device.color(ledPosition[0], ledPosition[1]);
-		}
+        const isFnHighlightKey = fnHighlight && deviceConfig.ledNames && FN_LAYER_HIGHLIGHT_NAMES.has(deviceConfig.ledNames[iIdx]);
+        const isLockedWinKey = winLockEnabled && deviceConfig.ledNames && deviceConfig.ledNames[iIdx] === "Left Win";
 
-		const ledIdx = deviceConfig.ledMap[iIdx];
+        if(overrideColor){
+            col = hexToRgb(overrideColor);
+        }
+        // ✅ Linke Win-Taste dunkel halten wenn WinLock aktiv ist —
+        // visuelles Feedback dass die Taste blockiert ist.
+        else if (isLockedWinKey) {
+            col = [0, 0, 0];
+        }
+        // ✅ FlashTap Keys ZUERST (höchste Priorität vor Fn-Highlight!)
+        else if (flashTapHighlight && FLASHTAP_KEY_INDICES.has(iIdx)) {
+            col = flashTapHighlight;
+        }
+        // ✅ Game Mode: Forced Color wenn gameModeForceColor=true
+        else if (gameModeActive && gameModeForceColor) {
+            col = gameModeColor && gameModeColor !== "#000000"
+                ? hexToRgb(gameModeColor)
+                : hexToRgb(forcedColor);
+        }
+        else if (isFnHighlightKey) {
+            col = fnHighlight;
+        }
+        // While Fn is held, every key that is NOT in the highlight set goes
+        // dark — matches iCUE's affordance of showing only the actionable
+        // keys while Fn is engaged.
+        else if (fnHighlight) {
+            col = [0, 0, 0];
+        }
+        else if (LightingMode === "Forced") {
+            col = hexToRgb(forcedColor);
+        }
+        else{
+            col = subdevice
+                ? device.subdeviceColor(deviceConfig.name, ledPosition[0], ledPosition[1])
+                : device.color(ledPosition[0], ledPosition[1]);
+        }
 
-		RGBData[ledIdx * 3] = col[0];
-		RGBData[ledIdx * 3 + 1] = col[1];
-		RGBData[ledIdx * 3 + 2] = col[2];
-	}
+        const ledIdx = deviceConfig.ledMap[iIdx];
 
-	return RGBData;
+        RGBData[ledIdx * 3] = col[0];
+        RGBData[ledIdx * 3 + 1] = col[1];
+        RGBData[ledIdx * 3 + 2] = col[2];
+    }
+
+    return RGBData;
 }
 
 /**
@@ -1235,9 +1639,9 @@ class CorsairLibrary{
 			//105 : "Left Ctrl",
 			//106 : "",
 			//107 : "Left Alt",
-			//108 : "Windows",
+			108 : "Left Win",
 			//109 : "Right Ctrl",
-			//110 : "Right Shift",
+			110 : "Right Shift",
 			//111 : "Right Alt",
 			//112 : "",
 			113 : "Brightness",
@@ -2339,7 +2743,8 @@ export class ModernCorsairProtocol{
 			Handle = this.handles[Handle];
 		}
 
-		const packet = [0x00, 0x00, 0x02, deviceID, this.command.closeHandle, 1, Handle];
+		// ✅ KORREKT: Byte-Reihenfolge wie OpenHandle
+		const packet = [0x00, 0x00, deviceID, 0x02, this.command.closeHandle, 1, Handle];
 		device.clearReadBuffer();
 		device.pause(1);
 		device.write(packet, this.GetWriteLength());
@@ -2547,20 +2952,29 @@ export class ModernCorsairProtocol{
 			RGBData.splice(0, 0, ...[this.dataTypes.LightingController, 0x00]);
 		}
 
-		const isLightingEndpointOpen = this.IsHandleOpen(lightingHandle, deviceID);
-
-		if(!isLightingEndpointOpen){
-			this.OpenHandle(lightingHandle, isLightingController ? this.endpoints.LightingController : this.endpoints.Lighting, deviceID);
+		// IsHandleOpen ist auf v2-Firmware unzuverlässig (gibt regelmäßig
+		// fälschlich "open" zurück). Wir tracken den Handle-State selbst
+		// um die kostbaren Per-Frame-Roundtrips zu sparen und um den
+		// 50ms-Recovery-Pause-Schmerz zu vermeiden. Endpoint-Wechsel
+		// (Lighting ↔ LightingController) erzwingt ein Reopen.
+		const lightingEndpoint = isLightingController ? this.endpoints.LightingController : this.endpoints.Lighting;
+		if(!this._lightingHandleOpen || this._lightingHandleEndpoint !== lightingEndpoint){
+			this.OpenHandle(lightingHandle, lightingEndpoint, deviceID);
+			this._lightingHandleOpen = true;
+			this._lightingHandleEndpoint = lightingEndpoint;
 		}
 
 		let TotalBytes = RGBData.length;
 		const InitialPacketSize = this.GetWriteLength() - InitialHeaderSize;
 
 		const writeLightingError = this.WriteLighting(RGBData.length, RGBData.splice(0, InitialPacketSize), lightingHandle, deviceID);
-		//Changed this to try reopening the handle if any error is encountered as the checkError function doesn't return the error type.
 
 		if(writeLightingError) {
-			this.OpenHandle(lightingHandle, isLightingController ? this.endpoints.LightingController : this.endpoints.Lighting, deviceID);
+			// Handle ist trotz unseres State-Trackings tot — re-open jetzt
+			// sofort statt 50ms zu warten. Caps die FPS sonst auf ~20.
+			this.OpenHandle(lightingHandle, lightingEndpoint, deviceID);
+			this._lightingHandleOpen = true;
+			this._lightingHandleEndpoint = lightingEndpoint;
 		}
 
 		TotalBytes -= InitialPacketSize;
@@ -2587,7 +3001,9 @@ export class ModernCorsairProtocol{
 
 		if(ErrorCode){
 			device.log(`WriteLighting Error`);
-			device.pause(50); //Same idea as above but less extreme.
+			// Kein pause(50) hier — der Caller (SendRGBData) re-opent das
+			// Handle sofort. Die alte 50ms-Strafe hat die FPS auf ~20
+			// gecappt sobald der Error pro Frame kam.
 
 			return true;
 		}
