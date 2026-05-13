@@ -37,6 +37,9 @@ fnHighlightColor:readonly
 rapidTrigger:readonly
 rapidTriggerSensitivity:readonly
 gameModePollRate:readonly
+knobModeMedia:readonly
+knobModeVerticalScroll:readonly
+knobModeReset:readonly
 */
 export function ControllableParameters(){
     return [
@@ -48,6 +51,9 @@ export function ControllableParameters(){
         {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash to while Fn is held down (mirrors iCUE's behaviour). Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
         {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Enables dynamic actuation: keys register based on direction of motion (press vs release) instead of fixed depth. Reduces input lag for fast double-taps. Captured from iCUE bytes — see rapidtrigger_main_*.pcapng.", "type":"boolean", "default":false},
         {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"Distance the key must move before re-triggering. Lower = more sensitive (faster repeated activation). Range 0.1mm to 1.0mm matches the iCUE UI. Only takes effect while Rapid Trigger is enabled.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
+        {"property":"knobModeMedia", "group":"", "label":"Knob – Media Mode", description:"Include Media mode in the Fn+F12 cycle. Turn=Skip Forward/Backward, Push=Play/Pause.", "type":"boolean", "default":true},
+        {"property":"knobModeVerticalScroll", "group":"", "label":"Knob – Vertical Scroll Mode", description:"Include Vertical Scroll mode (Page Up/Down — no mouse-wheel API in keyboard plugin). No push action.", "type":"boolean", "default":true},
+        {"property":"knobModeReset", "group":"", "label":"Knob – Reset / Off Mode", description:"Include a no-op fallback slot in the cycle (firmware XX=0x00, LCD label off). No action, no push.", "type":"boolean", "default":false},
     ];
 }
 
@@ -79,16 +85,27 @@ function hidRepeat(steps, code) {
 // Reihenfolge entspricht iCUE (keyboard_functions.pcapng).
 const KNOB_MODES = [
     {
+        name: "Volume",
+        uiKey: "knobModeVolume",
+        firmwareXX: 0x42,
+        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
+        // Klick auf den Knob: Mute (analog zu iCUE — Volume-Knob-Klick
+        // ist der Standard-Mute-Toggle).
+        pushAction: () => hidRepeat(1, 0xAD),
+    },
+    {
         name: "Media",
+        uiKey: "knobModeMedia",
         firmwareXX: 0x41,
         // Drehen: Skip Forward / Skip Backward (Next/Prev Track).
         action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xB0 : 0xB1),
-        // Klick auf den Knob: Play/Pause (siehe media_prev_next_pauseplay
-        // .pcapng frame 15 — Wheel Key bitIdx 137 fires bei Knob-Push).
+        // Klick auf den Knob: Play/Pause. Vanguard Pro 96 sendet Knob-Push
+        // als bitIdx 129 (empirisch via Diagnose-Log bestätigt).
         pushAction: () => hidRepeat(1, 0xB3),
     },
     {
         name: "Vertical Scroll",
+        uiKey: "knobModeVerticalScroll",
         firmwareXX: 0x3d,
         // Im Keyboard-Plugin gibt's kein `mouse`-Objekt — Fallback auf
         // Page Up / Page Down. Funktioniert in Browsern, PDF-Viewern,
@@ -98,35 +115,49 @@ const KNOB_MODES = [
         pushAction: null,
     },
     {
-        name: "Volume",
-        firmwareXX: 0x42,
-        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
-        // Klick auf den Knob: Mute (analog zu iCUE — Volume-Knob-Klick
-        // ist der Standard-Mute-Toggle).
-        pushAction: () => hidRepeat(1, 0xAD),
-    },
-    {
         name: "Reset",
+        uiKey: "knobModeReset",
         firmwareXX: 0x00,
-        action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
+        // No-op: Knob im "Off"-Mode soll nichts triggern. Push/Action beide
+        // null — getKnobMode().action wird mit Existenz-Check aufgerufen.
+        action: null,
         pushAction: null,
     },
 ];
 let knobModeIdx = 0;
 
-function getKnobMode() {
-    return KNOB_MODES[knobModeIdx];
+// UI-Toggles werden als bare Globals vom SignalRGB-Runtime injiziert. Beim
+// Plugin-Init existieren sie evtl. noch nicht → typeof-Guard. Volume ist
+// nicht abwählbar (kein UI-Toggle, hardcoded true) damit es immer als
+// erster Slot im Cycle steht und der Knob nie tot ist.
+function isKnobModeEnabled(mode) {
+    switch (mode.uiKey) {
+    case "knobModeVolume":         return true; // immer aktiv, kein UI-Toggle
+    case "knobModeMedia":          return typeof knobModeMedia          !== "undefined" ? !!knobModeMedia          : true;
+    case "knobModeVerticalScroll": return typeof knobModeVerticalScroll !== "undefined" ? !!knobModeVerticalScroll : true;
+    case "knobModeReset":          return typeof knobModeReset          !== "undefined" ? !!knobModeReset          : false;
+    default: return true;
+    }
 }
 
-function cycleFnMode() {
-    knobModeIdx = (knobModeIdx + 1) % KNOB_MODES.length;
-    const mode = getKnobMode();
-    device.log(`Knob Mode cycled to: ${mode.name} (firmware XX=0x${mode.firmwareXX.toString(16)})`);
+// Volume ist garantiert immer drin (siehe isKnobModeEnabled). Reihenfolge in
+// KNOB_MODES ist Volume-zuerst → filter() erhält Reihenfolge → enabled[0]
+// ist immer Volume.
+function getEnabledKnobModes() {
+    return KNOB_MODES.filter(isKnobModeEnabled);
+}
 
-    // 4-Paket-Sequenz aus iCUE auf conn=0x02 (FNF12.pcapng frames 19/23/27/31).
-    // sendAndRead wartet pro Paket auf den Firmware-ACK, sonst kommt der
-    // writeEndpoint bevor das Handle offen ist und die Firmware verwirft
-    // den Write.
+function getKnobMode() {
+    const enabled = getEnabledKnobModes();
+    return enabled[knobModeIdx % enabled.length];
+}
+
+// 4-Paket-Sequenz aus iCUE auf conn=0x02 (FNF12.pcapng frames 19/23/27/31).
+// sendAndRead wartet pro Paket auf den Firmware-ACK, sonst kommt der
+// writeEndpoint bevor das Handle offen ist und die Firmware verwirft den
+// Write.
+function writeKnobMode(mode) {
+    device.log(`Setting Knob Mode: ${mode.name} (firmware XX=0x${mode.firmwareXX.toString(16)})`);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x3e]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02,
@@ -136,6 +167,12 @@ function cycleFnMode() {
         mode.firmwareXX,
         0x00, 0x00]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
+}
+
+function cycleFnMode() {
+    const enabled = getEnabledKnobModes();
+    knobModeIdx = (knobModeIdx + 1) % enabled.length;
+    writeKnobMode(enabled[knobModeIdx]);
 }
 
 function setHardwareGameMode(enabled) {
@@ -391,6 +428,14 @@ export function Initialize() {
 
 	if (gameMode) setHardwareGameMode(gameMode);
 	if (flashTap) setHardwareFlashTap(flashTap);
+
+	// Knob auf definierten Start-State: enabled[0] = Volume (siehe
+	// getEnabledKnobModes — Volume ist hardcoded immer aktiv und steht in
+	// KNOB_MODES an Position 0). Ohne diesen Write bliebe der Knob auf
+	// was-auch-immer-er-vorher-war (iCUE-Setting, vorherige Session, etc.).
+	knobModeIdx = 0;
+	writeKnobMode(getEnabledKnobModes()[0]);
+
 	refreshKeyboardLighting();
 }
 
@@ -1660,7 +1705,7 @@ class CorsairLibrary{
 			//126 : "Rewind",
 			//127 : "",
 			128 : "Profile",
-			//129 : "",
+			129 : "Wheel Key", // Vanguard Pro 96 Knob-Push (empirisch via Diagnose-Log in Volume-Mode bestätigt 2026-05-13). Upstream Bragi K100 nutzt 137 für dasselbe — bleibt unten zusätzlich gemappt.
 			130 : "Game Mode",
 			131 : "G1",
 			132 : "G2",
