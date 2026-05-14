@@ -36,6 +36,7 @@ flashTap:readonly
 fnHighlightColor:readonly
 rapidTrigger:readonly
 rapidTriggerSensitivity:readonly
+actuationPoint:readonly
 gameModePollRate:readonly
 knobModeMedia:readonly
 knobModeVerticalScroll:readonly
@@ -50,6 +51,7 @@ export function ControllableParameters(){
         {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash to while Fn is held down (mirrors iCUE's behaviour). Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
         {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Enables dynamic actuation: keys register based on direction of motion (press vs release) instead of fixed depth. Reduces input lag for fast double-taps. Captured from iCUE bytes — see rapidtrigger_main_*.pcapng.", "type":"boolean", "default":false},
         {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"Distance the key must move before re-triggering. Lower = more sensitive (faster repeated activation). Range 0.1mm to 1.0mm matches the iCUE UI. Only takes effect while Rapid Trigger is enabled.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
+        {"property":"actuationPoint", "group":"", "label":"Key Actuation Point (mm)", description:"Distance every key must travel before registering. Range 0.3mm to 3.6mm matches the iCUE UI. ONLY EFFECTIVE WHILE GAME MODE IS ON — firmware silently drops the write otherwise (iCUE has the same restriction in its UI: outside Game Mode only per-key config is possible). Applied to all keys uniformly via the writeRapidTriggerConfig path; verified bytes in dumps/corsair_keyboard/tastenbestätigung_im_gamemode_1mm[_mit_rapittrigger_0.5mm].pcapng.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
         {"property":"knobModeMedia", "group":"", "label":"Knob – Media Mode", description:"Include Media mode in the Fn+F12 cycle. Turn=Skip Forward/Backward, Push=Play/Pause.", "type":"boolean", "default":true},
         {"property":"knobModeVerticalScroll", "group":"", "label":"Knob – Vertical Scroll Mode", description:"Include Vertical Scroll mode (Page Up/Down — no mouse-wheel API in keyboard plugin). No push action.", "type":"boolean", "default":true},
     ];
@@ -197,6 +199,15 @@ function applyGameModeDependencies() {
         setHardwareFlashTap(true);
     }
 
+    // Re-apply the actuation/RT block whenever Game Mode engages. Firmware
+    // drops these writes silently outside Game Mode, so the user's chosen
+    // actuation point only "sticks" once GM is active. Without this, a user
+    // who never touches the UI after GM toggles would get the firmware
+    // default (2.0mm) instead of their configured value.
+    if (gameModeActive) {
+        writeRapidTriggerConfig();
+    }
+
     // Polling rate auto-switch. Only writes when:
     //   - settingControl is active (user wants us to manage this)
     //   - the target rate for the new mode is defined
@@ -296,28 +307,44 @@ function writeRapidTriggerConfig() {
     const sens10 = Math.max(1, Math.min(10, Math.round(sensitivityValue * 10)));
     const rtFlag = rapidTrigger ? 0x01 : 0x00;
 
-    // 14-byte Payload — Template aus rapidtrigger_main_enable.pcapng frame 9
+    // Actuation point in 1/10mm. UI dropdown spans 0.3–3.6mm matching iCUE.
+    // Clamp defensively in case the property is missing or malformed.
+    const actuationStr = (typeof actuationPoint === "string") ? actuationPoint : "2.0";
+    const actuation10 = Math.max(3, Math.min(36, Math.round(parseFloat(actuationStr) * 10)));
+
+    // Byte 5 ("sec clamp") tracks the actuation point in the iCUE captures.
+    // Empirical formula from comparing 1mm vs 1mm+RT vs 2mm captures: the
+    // value follows the primary actuation × 10 but clamped to a small upper
+    // range. iCUE's exact algorithm isn't fully reverse-engineered yet; this
+    // approximation matches the two new captures (1mm → 0x13 without RT,
+    // 0x09 with RT 0.5mm). Use the captured value verbatim when possible.
+    const secClamp = rtFlag ? 0x09 : 0x13;
+
+    // 14-byte payload — same shape as rapidtrigger_main_enable.pcapng and
+    // the new tastenbestätigung_im_gamemode_1mm[_mit_rapittrigger_0.5mm]
+    // captures. Byte 3 + byte 11 = primary actuation (always identical),
+    // byte 10 = RT enable, byte 12/13 = RT sensitivity, byte 5 = sec clamp.
     const payload = [
         0x63, 0x00, 0x01,
-        0x14,         // byte 3: Primärer Betätigungspunkt = 2.0mm
+        actuation10, // byte 3: Primärer Betätigungspunkt
         0x00,
-        0x13,         // byte 5: iCUE-default (Sekundärwert/Clamp)
-        0x00,         // byte 6: Sekundärer Bestätigungspunkt = OFF
+        secClamp,    // byte 5: sec clamp (changes with RT enable in iCUE captures)
+        0x00,        // byte 6: Sekundärer Bestätigungspunkt = OFF
         0x25, 0x00, 0x22,  // bytes 7-9: iCUE-defaults
-        rtFlag,       // byte 10: Rapid Trigger Enable
-        0x14,         // byte 11: duplicate of byte 3
-        sens10,       // byte 12: Press Sensitivity (×10 mm)
-        sens10,       // byte 13: Release Sensitivity (×10 mm, identisch wenn Separate Sens AUS)
+        rtFlag,      // byte 10: Rapid Trigger Enable
+        actuation10, // byte 11: duplicate of byte 3
+        sens10,      // byte 12: Press Sensitivity (×10 mm)
+        sens10,      // byte 13: Release Sensitivity (×10 mm, identical when "Separate Sens" off)
     ];
 
-    // 4-Paket-Sequenz: open / check / write / close auf handle=0x02, endpoint=0x48
+    // 4-packet sequence: open / check / write / close on handle=0x02, endpoint=0x48
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x48]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02,
         0x0e, 0x00, 0x00, 0x00].concat(payload));
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
 
-    device.log(`Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity`);
+    device.log(`Actuation @ ${(actuation10/10).toFixed(1)}mm — Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity` + (gameModeActive ? "" : " — WARNING: Game Mode OFF, firmware will ignore"));
 }
 
 export function onrapidTriggerChanged() {
@@ -325,6 +352,10 @@ export function onrapidTriggerChanged() {
 }
 
 export function onrapidTriggerSensitivityChanged() {
+    writeRapidTriggerConfig();
+}
+
+export function onactuationPointChanged() {
     writeRapidTriggerConfig();
 }
 
