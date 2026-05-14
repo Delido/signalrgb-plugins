@@ -39,8 +39,11 @@ def _ensure_com_initialized():
 VID = 0x1B1C
 PID = 0x0A64
 EVENT_USAGE_PAGE = 0xFF42
-EVENT_USAGE = 0x0002
+EVENT_USAGE = 0x0002      # col06 — passive event channel (read-only)
+CMD_USAGE = 0x0001        # col05 — command channel (read/write)
 MIC_REGISTER = 0x46
+LED_ECHO_REGISTER = 0x8E  # iCUE writes this paired with the mic register so the headset's mute-LED updates
+WIRELESS_MODE = 0x09      # 0x09 for wireless dongle; 0x08 for wired (HS80 etc.)
 
 
 class MicController:
@@ -179,3 +182,122 @@ class HeadsetMicWatcher(threading.Thread):
             # No good way to detect "device went away" from pywinusb other
             # than the next read failing. We rely on _on_report errors or
             # explicit unplug events. For now, keep handle until stop().
+
+
+class HeadsetMuteWriter:
+    """Pushes mute state to the Virtuoso XT command channel (col05).
+
+    iCUE writes the mute-toggle as TWO sequential SET commands:
+        02 09 01 8E 00 <V>   — register 0x8E (LED feedback echo, updates mute LED)
+        02 09 01 46 00 <V>   — register 0x46 (actual mic mute state)
+    Verified bytes in dumps/corsair_headset/corsair_headset_unmute_mute.pcapng
+    frames 111/115 (unmute) and 177/181 (mute).
+    """
+
+    def __init__(self):
+        self._device = None
+
+    def _open(self):
+        self._close()
+        for d in hid.HidDeviceFilter(vendor_id=VID, product_id=PID).get_devices():
+            try:
+                d.open()
+                caps = d.hid_caps
+                if caps and caps.usage_page == EVENT_USAGE_PAGE and caps.usage == CMD_USAGE:
+                    self._device = d
+                    logging.info("[mic_mute/writer] Opened Virtuoso XT command channel")
+                    return True
+                d.close()
+            except Exception:
+                try:
+                    d.close()
+                except Exception:
+                    pass
+        return False
+
+    def _close(self):
+        if self._device:
+            try:
+                self._device.close()
+            except Exception:
+                pass
+            self._device = None
+
+    close = _close  # public alias
+
+    def _send_set(self, register, value):
+        """Send a single `02 09 01 <reg> 00 <V>` SET command."""
+        reports = self._device.find_output_reports()
+        if not reports:
+            return False
+        report = reports[0]
+        out_len = self._device.hid_caps.output_report_byte_length or 65
+        payload = bytearray(out_len)
+        # pywinusb expects the report-ID byte at index 0; wire bytes follow.
+        wire = [0x00, 0x02, WIRELESS_MODE, 0x01, register, 0x00, value]
+        for i, b in enumerate(wire):
+            if i >= out_len:
+                break
+            payload[i] = b
+        report.set_raw_data(list(payload))
+        return bool(report.send())
+
+    def set_mute(self, muted: bool) -> bool:
+        if self._device is None and not self._open():
+            return False
+        v = 0x01 if muted else 0x00
+        try:
+            # iCUE sends LED echo first, then mic state — preserve that order
+            # so the LED color flips before the mic actually mutes.
+            ok1 = self._send_set(LED_ECHO_REGISTER, v)
+            ok2 = self._send_set(MIC_REGISTER, v)
+            return ok1 and ok2
+        except Exception:
+            logging.exception("[mic_mute/writer] send failed; will reopen next time")
+            self._close()
+            return False
+
+
+class WindowsMicMuteWatcher(threading.Thread):
+    """Polls the Windows default mic mute state and mirrors it to the
+    headset hardware. Counterpart to HeadsetMicWatcher — together they
+    form a bidirectional sync.
+
+    Echo-suppression: each watcher only triggers a write when its OWN side
+    changes. After a hardware press, HeadsetMicWatcher writes to Windows,
+    we observe the change here and write back to the headset (which is
+    already in the requested state — a one-shot redundant write, NOT a
+    loop, because writing the same value doesn't produce a real state
+    change worth re-emitting).
+    """
+
+    def __init__(self, mic_controller, headset_writer, get_config):
+        super().__init__(daemon=True, name="WindowsMicMuteWatcher")
+        self.mic = mic_controller
+        self.headset = headset_writer
+        self.get_config = get_config
+        self._stop = threading.Event()
+        self.last_state = None
+        self.poll_interval = 0.5
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        while not self._stop.is_set():
+            try:
+                cur = self.mic.get_mute()
+                if cur is not None:
+                    if self.last_state is None:
+                        # First reading: seed without action.
+                        self.last_state = cur
+                    elif cur != self.last_state:
+                        self.last_state = cur
+                        if self.get_config().get("mic_mute_mirror", {}).get("enabled", True):
+                            logging.info(f"[mic_mute/win] Windows mic → {'MUTED' if cur else 'UNMUTED'} → syncing headset")
+                            self.headset.set_mute(cur)
+                        else:
+                            logging.info(f"[mic_mute/win] Windows mic → {'MUTED' if cur else 'UNMUTED'} (feature disabled)")
+            except Exception:
+                logging.exception("[mic_mute/win] poll failed")
+            self._stop.wait(self.poll_interval)

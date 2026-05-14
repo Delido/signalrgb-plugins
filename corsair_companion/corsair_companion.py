@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 
 from config import APP_NAME, CONFIG_DIR, LOG_PATH, load_config
 from feature_game_mode import KeyboardController, ProcessWatcher
-from feature_mic_mute import HeadsetMicWatcher, MicController
+from feature_mic_mute import HeadsetMicWatcher, HeadsetMuteWriter, MicController, WindowsMicMuteWatcher
 
 
 def make_icon(game_mode_active: bool, mic_muted: bool) -> Image.Image:
@@ -46,12 +46,16 @@ class TrayApp:
 
         self.keyboard = KeyboardController()
         self.mic = MicController()
+        self.headset_writer = HeadsetMuteWriter()
 
         self.gm_watcher = ProcessWatcher(
             self.keyboard, get_config=load_config, on_state_change=self._on_gm_change
         )
         self.mic_watcher = HeadsetMicWatcher(
             self.mic, get_config=load_config, on_state_change=self._on_mic_change
+        )
+        self.win_mic_watcher = WindowsMicMuteWatcher(
+            self.mic, self.headset_writer, get_config=load_config
         )
 
         self.icon = None
@@ -83,13 +87,16 @@ class TrayApp:
         logging.info("Quit requested")
         self.gm_watcher.stop()
         self.mic_watcher.stop()
+        self.win_mic_watcher.stop()
         self.keyboard.close()
+        self.headset_writer.close()
         if self.icon:
             self.icon.stop()
 
     def run(self):
         self.gm_watcher.start()
         self.mic_watcher.start()
+        self.win_mic_watcher.start()
         menu = pystray.Menu(
             pystray.MenuItem("Settings…", self._spawn_settings),
             pystray.Menu.SEPARATOR,
