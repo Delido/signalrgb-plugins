@@ -605,7 +605,33 @@ function setMacroKeys(deviceID = 1, keyCount = 0) {
 }
 
 
+// Known wired keyboards in this fork. The upstream Bragi codebase tries to
+// detect device class by probing properties (wireless subdevice bitmask,
+// battery level, DPI), and each failing probe writes a generic "Property
+// is not supported on this device!" line to the log. These PIDs are wired
+// keyboards with no battery, no DPI, no wireless dongle — so we short-
+// circuit before issuing the probes that we know will fail.
+const WIRED_KEYBOARD_PIDS = new Set([0x2B0D, 0x2B0E]);
+
+function _knownWiredKeyboard() {
+	try {
+		const pid = device.productId();
+		return WIRED_KEYBOARD_PIDS.has(pid);
+	} catch (_) {
+		return false;
+	}
+}
+
 function fetchAndConfigureChildren() {
+	// Skip the wireless-subdevice probe for known wired keyboards — there
+	// will never be a dongle here, the FetchProperty(0x36) call just fails
+	// and logs noise.
+	if (_knownWiredKeyboard()) {
+		device.log("Wired keyboard detected (skipping wireless probe). Setting up Wired Mode...", {toFile: true});
+		setupWiredDevice();
+		return;
+	}
+
 	if(Corsair.IsPropertySupported(Corsair.properties.subdeviceBitmask)){
 		device.log(`Wireless Dongle detected!`, {toFile : true});
 
