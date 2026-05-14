@@ -1,11 +1,15 @@
 @echo off
 REM Build single-file exe via PyInstaller.
-REM Output: dist\GameModeWatcher.exe (no console, tray-app windowed mode)
+REM Output: dist\CorsairCompanion.exe (no console, tray-app windowed mode)
+REM
+REM --add-data bundles the sibling modules so the frozen exe can re-spawn
+REM itself in --settings mode and import them. PyInstaller analyzes the
+REM main script's imports automatically; explicit --hidden-import only
+REM needed for dynamic imports (we don't have any).
 
 setlocal
 cd /d "%~dp0"
 
-REM Use the Python scripts dir that has pyinstaller.exe even if not on PATH.
 set "PYI=%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\Scripts\pyinstaller.exe"
 
 if not exist "%PYI%" (
@@ -14,12 +18,12 @@ if not exist "%PYI%" (
 )
 
 %PYI% ^
-    --name GameModeWatcher ^
+    --name CorsairCompanion ^
     --onefile ^
     --windowed ^
     --noconfirm ^
     --clean ^
-    gamemode_watcher.py
+    corsair_companion.py
 
 if errorlevel 1 (
     echo BUILD FAILED
@@ -27,5 +31,5 @@ if errorlevel 1 (
 )
 
 echo.
-echo Built: %~dp0dist\GameModeWatcher.exe
+echo Built: %~dp0dist\CorsairCompanion.exe
 endlocal

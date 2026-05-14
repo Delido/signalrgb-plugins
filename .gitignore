@@ -6,10 +6,10 @@ dumps/
 .claude/
 backups/
 
-# PyInstaller build output for gamemode_watcher (18 MB single-file exe + intermediates)
-gamemode_watcher/build/
-gamemode_watcher/dist/
-gamemode_watcher/*.spec
+# PyInstaller build output for corsair_companion (~20 MB single-file exe + intermediates)
+corsair_companion/build/
+corsair_companion/dist/
+corsair_companion/*.spec
 
 # Python bytecode caches
 __pycache__/
