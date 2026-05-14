@@ -5,3 +5,13 @@ dumps/
 # IDE/agent artifacts
 .claude/
 backups/
+
+# PyInstaller build output for gamemode_watcher (18 MB single-file exe + intermediates)
+gamemode_watcher/build/
+gamemode_watcher/dist/
+gamemode_watcher/*.spec
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+*.pyo

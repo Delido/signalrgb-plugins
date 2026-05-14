@@ -178,22 +178,30 @@ function setHardwareGameMode(enabled) {
     device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xE1, 0x00, gameModeActive ? 0x01 : 0x00], 1024);
     device.log(`Game Mode ${gameModeActive ? "engaged" : "released"} via v2 setProperty(0xE1)`);
 
+    applyGameModeDependencies();
+}
+
+// Side-effects that have to run whenever gameModeActive changes — regardless
+// of whether the change originated from a UI toggle, the physical GM key, or
+// an EXTERNAL process writing setProperty(0xE1) over USB. Factored out of
+// setHardwareGameMode so syncGameModeFromHardware() can apply them without
+// re-issuing the GM write itself.
+function applyGameModeDependencies() {
     if (!gameModeActive && flashTapActive) {
         device.log(`Game Mode disabled → FlashTap also disabled`);
         flashTapActive = false;
     }
 
-    // Falls FlashTap im UI gesetzt ist, aber Game Mode vorher aus war:
+    // If FlashTap is set in the UI but Game Mode was previously OFF, engage it now.
     if (gameModeActive && flashTap && !flashTapActive) {
         setHardwareFlashTap(true);
     }
 
-    // Auto-Switch der Polling Rate je nach Mode. Schreibt nur wenn:
-    //   - settingControl aktiv (User will dass wir das managen)
-    //   - die Ziel-Rate für den neuen Mode definiert ist
-    //   - sie sich vom zuletzt geschriebenen Wert unterscheidet (sonst
-    //     unnötiger USB-Reboot bei jedem GM-Toggle)
-    // Wenn User für beide Modi denselben Wert setzt → kein Reboot.
+    // Polling rate auto-switch. Only writes when:
+    //   - settingControl is active (user wants us to manage this)
+    //   - the target rate for the new mode is defined
+    //   - it differs from the last-written value (avoids USB re-enumeration
+    //     on every GM toggle when the rate didn't actually change)
     if (typeof settingControl !== "undefined" && settingControl) {
         const targetRate = gameModeActive
             ? (typeof gameModePollRate === "string" ? gameModePollRate : null)
@@ -205,6 +213,33 @@ function setHardwareGameMode(enabled) {
     }
 
     refreshKeyboardLighting();
+}
+
+// Detect Game Mode changes that originated OUTSIDE this plugin (e.g. an
+// external tool writing setProperty(0xE1) directly). If the firmware state
+// differs from our cached gameModeActive, we update the cache and run the
+// dependency chain — polling rate, FlashTap, lighting — so the rest of the
+// plugin behaves as if WE had triggered the toggle. Note: we cannot write
+// back to the `gameMode` UI property; it will show stale state until the
+// user reloads the plugin. The functional path (physical GM key, etc.)
+// works correctly because it keys off gameModeActive, not gameMode.
+function syncGameModeFromHardware() {
+    try {
+        const fwState = Corsair.FetchProperty(0xE1, 1);
+        if (fwState !== 0 && fwState !== 1) return;
+        const fwActive = (fwState === 1);
+        if (fwActive === gameModeActive) return;
+        device.log(`External Game Mode change detected: ${fwActive ? "ON" : "OFF"} (was ${gameModeActive ? "ON" : "OFF"})`);
+        gameModeActive = fwActive;
+        applyGameModeDependencies();
+    } catch (e) {
+        // FetchProperty can fail during a polling-rate reboot — silent.
+    }
+}
+
+export function ongameModeChanged() {
+    if (!wiredDevice) return;
+    setHardwareGameMode(gameMode);
 }
 
 // Mirror of the keyboard's hardware FlashTap (SOCD) state. Same pattern as
@@ -442,6 +477,8 @@ function sendAndRead(packet) {
 }
 
 let subdevicesEditedLastFrame = false;
+let _lastGameModeSyncAt = 0;
+const GAME_MODE_SYNC_INTERVAL_MS = 3000;
 
 export function Render() {
 	// Polling-Rate-Wechsel löst USB-Re-Enumeration aus (~5s). In dieser
@@ -461,6 +498,16 @@ export function Render() {
 	}
 
 	if(wiredDevice){
+		// Detect external Game Mode toggles (third-party tool writing
+		// setProperty(0xE1) directly). Rate-limited because FetchProperty
+		// does a USB roundtrip — running it every frame would tank the
+		// render budget.
+		const now = Date.now();
+		if (now - _lastGameModeSyncAt >= GAME_MODE_SYNC_INTERVAL_MS) {
+			_lastGameModeSyncAt = now;
+			syncGameModeFromHardware();
+		}
+
 		PollDeviceMode();
 		PollDeviceState();
 		UpdateRGB(wiredDevice);
@@ -978,7 +1025,7 @@ function processKeyboardMacros(bitIdx, state, keyName) {
 	// Fn + Right Shift toggles FlashTap (SOCD). Same pattern: the keyboard
 	// emits a Right-Shift-down event while Fn is held but waits for the
 	// host to echo `setProperty(0x0001)` on conn=0x03 to actually engage
-	// the feature. Reference: flashtab_on_then_off.pcapng frames 23 / 25.
+	// the feature. Reference: flashtap_on_then_off.pcapng frames 23 / 25.
 	if(keyName === "Right Shift" && state && FnEnabled) {
 		const newState = !flashTapActive;
 
