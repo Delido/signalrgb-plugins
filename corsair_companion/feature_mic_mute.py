@@ -226,15 +226,22 @@ class HeadsetMuteWriter:
     close = _close  # public alias
 
     def _send_set(self, register, value):
-        """Send a single `02 09 01 <reg> 00 <V>` SET command."""
+        """Send a single `02 09 01 <reg> 00 <V>` SET command.
+
+        Critical: this collection's output report is *numbered* with
+        report_id=0x02, NOT unnumbered (0x00) like the keyboard's. For
+        numbered reports pywinusb expects payload[0] to be the report ID
+        AND that byte IS transmitted on the wire as the first byte. So the
+        leading `0x02` doubles as both the report ID and the conn-byte the
+        headset firmware expects — exactly how iCUE's writes look in
+        dumps/corsair_headset/corsair_headset_unmute_mute.pcapng."""
         reports = self._device.find_output_reports()
         if not reports:
             return False
         report = reports[0]
         out_len = self._device.hid_caps.output_report_byte_length or 65
         payload = bytearray(out_len)
-        # pywinusb expects the report-ID byte at index 0; wire bytes follow.
-        wire = [0x00, 0x02, WIRELESS_MODE, 0x01, register, 0x00, value]
+        wire = [0x02, WIRELESS_MODE, 0x01, register, 0x00, value]
         for i, b in enumerate(wire):
             if i >= out_len:
                 break
