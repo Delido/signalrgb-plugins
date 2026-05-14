@@ -1,28 +1,26 @@
-"""Mic mute mirror feature.
+"""Mic mute mirror — bidirectional sync between the Virtuoso XT (or any
+other supported headset) hardware mute button and the Windows default
+microphone.
 
-Listens to the Corsair Virtuoso XT Wireless event channel for the
-"mic mute state changed" notification (event format `03 01 01 46 00 <V>`,
-verified against Corsair_Headset_Controller.js drainPassiveEvents). When the
-hardware mute button is pressed, mirrors the new state to the Windows
-default microphone via the Core Audio API (pycaw).
+Two directions, independently togglable in settings:
+  - hardware_to_windows: headset button → IAudioEndpointVolume.SetMute
+  - windows_to_hardware: Windows mute → headset SET-property pair
 
-Why not just rely on SignalRGB's plugin? The plugin only reads state to
-drive its LED color and does NOT propagate the change to Windows audio.
-This tool fills that gap.
-"""
+Headset-specific constants live in `devices.SUPPORTED_HEADSETS`. The device
+is selected once at app startup via config.mic_mute_mirror.device (auto or
+specific key) and passed to both watcher/writer."""
 import logging
 import threading
-import time
 
 import comtypes
 import pywinusb.hid as hid
 from comtypes import CLSCTX_ALL, POINTER, cast
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
-# pywinusb delivers reports on its own worker thread which hasn't called
-# CoInitialize. Any pycaw/comtypes call from that thread raises
-# `CoInitialize wurde nicht aufgerufen`. We init the apartment once per
-# thread via a thread-local flag.
+
+# COM apartment init per-thread. pywinusb's worker thread (where mic-event
+# reports arrive) hasn't called CoInitialize; pycaw calls from there raise
+# OSError [-2147221008]. Guard via thread-local flag.
 _com_init = threading.local()
 
 
@@ -31,20 +29,11 @@ def _ensure_com_initialized():
         try:
             comtypes.CoInitialize()
         except OSError:
-            # Already initialized (different apartment, or re-entered) — fine.
             pass
         _com_init.done = True
 
-# Virtuoso XT Wireless (extendable: HS80 = 0xA6 register, different PID).
-VID = 0x1B1C
-PID = 0x0A64
-EVENT_USAGE_PAGE = 0xFF42
-EVENT_USAGE = 0x0002      # col06 — passive event channel (read-only)
-CMD_USAGE = 0x0001        # col05 — command channel (read/write)
-MIC_REGISTER = 0x46
-LED_ECHO_REGISTER = 0x8E  # iCUE writes this paired with the mic register so the headset's mute-LED updates
-WIRELESS_MODE = 0x09      # 0x09 for wireless dongle; 0x08 for wired (HS80 etc.)
 
+# ─────────────────────────── Windows-side controller ────────────────────────
 
 class MicController:
     """Cached IAudioEndpointVolume on the Windows default microphone."""
@@ -87,16 +76,16 @@ class MicController:
             return None
 
 
+# ─────────────────────────── Headset event listener ─────────────────────────
+
 class HeadsetMicWatcher(threading.Thread):
-    """Opens the Virtuoso XT event channel and listens for hardware-mute
-    state changes. Calls the controller on each transition.
+    """Listens on the headset event channel for hardware-mute state changes
+    and (when the hardware_to_windows direction is enabled) mirrors the new
+    state to the Windows default mic."""
 
-    pywinusb's set_raw_data_handler delivers reports on a worker thread; we
-    only need this thread to keep the device handle alive and to attempt
-    reconnects when the headset goes offline (dongle disconnect, sleep)."""
-
-    def __init__(self, mic_controller, get_config, on_state_change=None):
+    def __init__(self, device_spec, mic_controller, get_config, on_state_change=None):
         super().__init__(daemon=True, name="HeadsetMicWatcher")
+        self.spec = device_spec   # None = feature disabled
         self.mic = mic_controller
         self.get_config = get_config
         self.on_state_change = on_state_change
@@ -110,14 +99,17 @@ class HeadsetMicWatcher(threading.Thread):
 
     def _open(self):
         self._close()
-        for d in hid.HidDeviceFilter(vendor_id=VID, product_id=PID).get_devices():
+        if not self.spec:
+            return False
+        for d in hid.HidDeviceFilter(vendor_id=self.spec["vid"], product_id=self.spec["pid"]).get_devices():
             try:
                 d.open()
                 caps = d.hid_caps
-                if caps and caps.usage_page == EVENT_USAGE_PAGE and caps.usage == EVENT_USAGE:
+                if (caps and caps.usage_page == self.spec["event_usage_page"]
+                        and caps.usage == self.spec["event_usage"]):
                     d.set_raw_data_handler(self._on_report)
                     self._device = d
-                    logging.info("[mic_mute] Listening on Virtuoso XT event channel")
+                    logging.info(f"[mic_mute] Listening on {self.spec['label']} event channel")
                     return True
                 d.close()
             except Exception:
@@ -136,76 +128,76 @@ class HeadsetMicWatcher(threading.Thread):
             self._device = None
 
     def _on_report(self, data):
-        # Empirically verified report layout on the col06 event channel of the
-        # Virtuoso XT Wireless (see watcher.log dumps): pywinusb does NOT
-        # prepend a report-ID byte here, so wire bytes start at data[0]:
-        #     [0x03, 0x01, 0x01, <reg>, 0x00, <V>, 0x00...]
-        # Filter `03 01 01` matches the plugin's drainPassiveEvents prefix;
-        # other prefixes (e.g. `03 01 02`) are ack/state events we ignore.
+        # Event format: `03 01 01 <mic_register> 00 <V>` (verified empirically).
+        # pywinusb does NOT prepend a report-ID byte on this collection — data[0]
+        # is the first wire byte directly.
         if len(data) < 6:
             return
         if data[0] != 0x03 or data[1] != 0x01 or data[2] != 0x01:
             return
-        if data[3] != MIC_REGISTER:
+        if data[3] != self.spec["mic_register"]:
             return
         muted = bool(data[5])
         if muted == self.last_state:
             return
         self.last_state = muted
 
-        if not self.get_config().get("mic_mute_mirror", {}).get("enabled", True):
-            logging.info(f"[mic_mute] hardware → {'MUTED' if muted else 'UNMUTED'} (feature disabled, ignoring)")
+        cfg = self.get_config().get("mic_mute_mirror", {})
+        if not cfg.get("enabled", True) or not cfg.get("hardware_to_windows", True):
+            logging.info(f"[mic_mute] hardware → {'MUTED' if muted else 'UNMUTED'} (HW→Win disabled)")
+            if self.on_state_change:
+                try: self.on_state_change(muted)
+                except Exception: logging.exception("[mic_mute] state callback failed")
             return
 
         if self.mic.set_mute(muted):
             logging.info(f"[mic_mute] hardware → {'MUTED' if muted else 'UNMUTED'} → Windows mic synced")
             if self.on_state_change:
-                try:
-                    self.on_state_change(muted)
-                except Exception:
-                    logging.exception("[mic_mute] state callback failed")
+                try: self.on_state_change(muted)
+                except Exception: logging.exception("[mic_mute] state callback failed")
         else:
             logging.warning("[mic_mute] mic toggle failed")
 
     def run(self):
-        # Try-open with reconnect loop. Headset disappears when dongle is
-        # unplugged or user powers it off — sleep and retry.
+        if not self.spec:
+            return
         while not self._stop.is_set():
             if self._device is None:
                 if not self._open():
-                    # Backoff: don't spam HID enumeration when nothing's there
                     self._stop.wait(5.0)
                     continue
-            # Device is open; pywinusb worker thread feeds _on_report.
-            # We just sleep and periodically check the handle.
             self._stop.wait(2.0)
-            # No good way to detect "device went away" from pywinusb other
-            # than the next read failing. We rely on _on_report errors or
-            # explicit unplug events. For now, keep handle until stop().
 
+
+# ─────────────────────────── Headset command writer ─────────────────────────
 
 class HeadsetMuteWriter:
-    """Pushes mute state to the Virtuoso XT command channel (col05).
+    """Pushes mute state to the headset command channel as a paired SET:
+    register `led_echo_register` then `mic_register`, both with the same
+    value byte. Wire bytes follow iCUE exactly (see
+    dumps/corsair_headset/corsair_headset_unmute_mute.pcapng).
 
-    iCUE writes the mute-toggle as TWO sequential SET commands:
-        02 09 01 8E 00 <V>   — register 0x8E (LED feedback echo, updates mute LED)
-        02 09 01 46 00 <V>   — register 0x46 (actual mic mute state)
-    Verified bytes in dumps/corsair_headset/corsair_headset_unmute_mute.pcapng
-    frames 111/115 (unmute) and 177/181 (mute).
-    """
+    Critical: this collection's output report is *numbered* with
+    `report_id=0x02`. pywinusb expects payload[0] to be the report ID AND
+    that byte IS transmitted on the wire — so the leading 0x02 doubles as
+    both the report ID and the conn-byte the firmware expects."""
 
-    def __init__(self):
+    def __init__(self, device_spec):
+        self.spec = device_spec
         self._device = None
 
     def _open(self):
         self._close()
-        for d in hid.HidDeviceFilter(vendor_id=VID, product_id=PID).get_devices():
+        if not self.spec:
+            return False
+        for d in hid.HidDeviceFilter(vendor_id=self.spec["vid"], product_id=self.spec["pid"]).get_devices():
             try:
                 d.open()
                 caps = d.hid_caps
-                if caps and caps.usage_page == EVENT_USAGE_PAGE and caps.usage == CMD_USAGE:
+                if (caps and caps.usage_page == self.spec["cmd_usage_page"]
+                        and caps.usage == self.spec["cmd_usage"]):
                     self._device = d
-                    logging.info("[mic_mute/writer] Opened Virtuoso XT command channel")
+                    logging.info(f"[mic_mute/writer] Opened {self.spec['label']} command channel")
                     return True
                 d.close()
             except Exception:
@@ -223,25 +215,16 @@ class HeadsetMuteWriter:
                 pass
             self._device = None
 
-    close = _close  # public alias
+    close = _close
 
     def _send_set(self, register, value):
-        """Send a single `02 09 01 <reg> 00 <V>` SET command.
-
-        Critical: this collection's output report is *numbered* with
-        report_id=0x02, NOT unnumbered (0x00) like the keyboard's. For
-        numbered reports pywinusb expects payload[0] to be the report ID
-        AND that byte IS transmitted on the wire as the first byte. So the
-        leading `0x02` doubles as both the report ID and the conn-byte the
-        headset firmware expects — exactly how iCUE's writes look in
-        dumps/corsair_headset/corsair_headset_unmute_mute.pcapng."""
         reports = self._device.find_output_reports()
         if not reports:
             return False
         report = reports[0]
         out_len = self._device.hid_caps.output_report_byte_length or 65
         payload = bytearray(out_len)
-        wire = [0x02, WIRELESS_MODE, 0x01, register, 0x00, value]
+        wire = [0x02, self.spec["wireless_mode"], 0x01, register, 0x00, value]
         for i, b in enumerate(wire):
             if i >= out_len:
                 break
@@ -250,14 +233,14 @@ class HeadsetMuteWriter:
         return bool(report.send())
 
     def set_mute(self, muted: bool) -> bool:
+        if not self.spec:
+            return False
         if self._device is None and not self._open():
             return False
         v = 0x01 if muted else 0x00
         try:
-            # iCUE sends LED echo first, then mic state — preserve that order
-            # so the LED color flips before the mic actually mutes.
-            ok1 = self._send_set(LED_ECHO_REGISTER, v)
-            ok2 = self._send_set(MIC_REGISTER, v)
+            ok1 = self._send_set(self.spec["led_echo_register"], v)
+            ok2 = self._send_set(self.spec["mic_register"], v)
             return ok1 and ok2
         except Exception:
             logging.exception("[mic_mute/writer] send failed; will reopen next time")
@@ -265,18 +248,11 @@ class HeadsetMuteWriter:
             return False
 
 
-class WindowsMicMuteWatcher(threading.Thread):
-    """Polls the Windows default mic mute state and mirrors it to the
-    headset hardware. Counterpart to HeadsetMicWatcher — together they
-    form a bidirectional sync.
+# ─────────────────────────── Windows-side watcher ───────────────────────────
 
-    Echo-suppression: each watcher only triggers a write when its OWN side
-    changes. After a hardware press, HeadsetMicWatcher writes to Windows,
-    we observe the change here and write back to the headset (which is
-    already in the requested state — a one-shot redundant write, NOT a
-    loop, because writing the same value doesn't produce a real state
-    change worth re-emitting).
-    """
+class WindowsMicMuteWatcher(threading.Thread):
+    """Polls Windows mic mute state; on change, mirrors to headset (when
+    the windows_to_hardware direction is enabled)."""
 
     def __init__(self, mic_controller, headset_writer, get_config):
         super().__init__(daemon=True, name="WindowsMicMuteWatcher")
@@ -296,15 +272,15 @@ class WindowsMicMuteWatcher(threading.Thread):
                 cur = self.mic.get_mute()
                 if cur is not None:
                     if self.last_state is None:
-                        # First reading: seed without action.
                         self.last_state = cur
                     elif cur != self.last_state:
                         self.last_state = cur
-                        if self.get_config().get("mic_mute_mirror", {}).get("enabled", True):
+                        cfg = self.get_config().get("mic_mute_mirror", {})
+                        if cfg.get("enabled", True) and cfg.get("windows_to_hardware", True):
                             logging.info(f"[mic_mute/win] Windows mic → {'MUTED' if cur else 'UNMUTED'} → syncing headset")
                             self.headset.set_mute(cur)
                         else:
-                            logging.info(f"[mic_mute/win] Windows mic → {'MUTED' if cur else 'UNMUTED'} (feature disabled)")
+                            logging.info(f"[mic_mute/win] Windows mic → {'MUTED' if cur else 'UNMUTED'} (Win→HW disabled)")
             except Exception:
                 logging.exception("[mic_mute/win] poll failed")
             self._stop.wait(self.poll_interval)

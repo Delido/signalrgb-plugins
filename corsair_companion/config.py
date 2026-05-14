@@ -10,17 +10,29 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 LOG_PATH = CONFIG_DIR / "watcher.log"
 
 DEFAULTS = {
-    # Game Mode feature (Vanguard Pro 96 — flips Game Mode property when any
-    # whitelisted process is running).
+    # Vanguard Pro 96 — toggle hardware Game Mode when any whitelisted
+    # process is running. SignalRGB plugin re-syncs polling rate / FlashTap
+    # within 3 s via FetchProperty polling.
     "game_mode": {
         "enabled": True,
+        "device": "auto",                    # see devices.SUPPORTED_KEYBOARDS keys + "auto"/"none"
         "poll_interval_seconds": 2.0,
         "executables": [],
     },
-    # Mic Mute Mirror feature (Virtuoso XT — toggles Windows default mic when
-    # the headset's hardware mute button is pressed).
+    # Virtuoso XT — bidirectional sync between hardware mute button and
+    # Windows default mic. Each direction independently toggleable.
     "mic_mute_mirror": {
         "enabled": True,
+        "device": "auto",                    # see devices.SUPPORTED_HEADSETS keys + "auto"/"none"
+        "hardware_to_windows": True,         # press headset button → mute Windows mic
+        "windows_to_hardware": True,         # Windows mute → tell headset (LED + USB audio)
+    },
+    # Diagnostic background watcher: logs mic level / dB / registry changes
+    # so we can identify what causes the "loudness drift" problem (level
+    # jumping after SignalRGB reloads or headset disconnects).
+    "mic_drift_logger": {
+        "enabled": False,                    # off by default; enable when actively debugging
+        "poll_interval_seconds": 5.0,
     },
 }
 
@@ -61,7 +73,6 @@ def _merge_defaults(cfg, defaults):
             out[k] = _merge_defaults(cur if isinstance(cur, dict) else {}, default_v)
         else:
             out[k] = cur
-    # Preserve any extra keys the user added (forward-compat)
     for k, v in cfg.items():
         if k not in out:
             out[k] = v
