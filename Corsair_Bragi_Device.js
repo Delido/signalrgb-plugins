@@ -498,7 +498,11 @@ export function Initialize() {
 	knobModeIdx = 0;
 	writeKnobMode(getEnabledKnobModes()[0]);
 
-	refreshKeyboardLighting();
+	// NOTE: do NOT call refreshKeyboardLighting() here — setSize is async,
+	// so the canvas isn't yet at [22,6] at this point and device.color()
+	// would emit "Out of bounds" warnings for every LED. The first Render()
+	// tick (which fires automatically once init returns) repaints everything
+	// once the canvas is ready.
 }
 
 function sendAndRead(packet) {
