@@ -306,13 +306,28 @@ export function onpauseForWebHubChanged() {
             Corsair._lightingHandleEndpoint = null;
         }
     } else {
-        device.log("Pause-for-Web-Hub DISABLED — resuming normal lighting render");
+        device.log("Pause-for-Web-Hub DISABLED — re-establishing session and resuming");
         if (Corsair) {
-            // Belt-and-braces: ensure state is reset so first render after
-            // resume triggers an OpenHandle. If user toggled pause→resume
-            // quickly, library's state might still be stale.
             Corsair._lightingHandleOpen = false;
             Corsair._lightingHandleEndpoint = null;
+        }
+        // Web Hub leaves the keyboard in Hardware Mode and probably has
+        // a lingering session-lock from its conn=0x00 handshake. The
+        // upstream library's Corsair.SetMode("Software") FAILS in this
+        // state (FetchProperty returns Hardware even after SetProperty
+        // write — observed in log right after pause-disable). We re-do
+        // the Bragi-v2 session handshake from Initialize() verbatim to
+        // clear the lock and force Software Mode.
+        try {
+            device.set_endpoint(0x02, 0x01, 0xFF42);
+            sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0x3d, 0x78, 0xaf, 0x8b]);
+            sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xcf, 0xde, 0x51, 0x08]);
+            sendAndRead([0x00, 0x00, 0x01, 0x02, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+            sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xbf, 0xe4, 0x19, 0x3a]);
+            sendAndRead([0x00, 0x00, 0x01, 0x02, 0x01, 0x03, 0x00, 0x02]);
+            device.log("Bragi session re-established, Software Mode set");
+        } catch (e) {
+            device.log(`Resume handshake failed: ${e}`);
         }
     }
 }
