@@ -288,18 +288,32 @@ export function ongameModeChanged() {
 }
 
 export function onpauseForWebHubChanged() {
-    // Toggle on  → immediately release the lighting handle so the Web Hub
-    //              can claim the keyboard on the next browser connect.
-    //              Render() bail-out then keeps us idle until toggle off.
-    // Toggle off → resume normal operation. Render() will re-open the
-    //              lighting handle on its first SendRGBData call.
+    // Toggle on  → release lighting handle ONCE so Web Hub can claim it,
+    //              then Render() bail-out keeps us idle until toggle off.
+    // Toggle off → reset the JS-side `_lightingHandleOpen` flag so the
+    //              next SendRGBData re-opens. Without this reset the
+    //              library thinks the handle is still open (state was
+    //              true when we externally closed it), skips the re-open
+    //              call, and the next write fails with "Handle is not
+    //              open!" then RGB stays dark.
     if (pauseForWebHub) {
-        device.log("Pause-for-Web-Hub ENABLED — releasing lighting handle and stopping render writes");
-        if (wiredDevice && Corsair && Corsair.CloseHandleIfOpen) {
+        device.log("Pause-for-Web-Hub ENABLED — releasing lighting handle, render writes stopped");
+        if (wiredDevice && Corsair) {
             try { Corsair.CloseHandleIfOpen("Lighting", 1); } catch (_) {}
+            // Force JS-side state to match — library's CloseHandleIfOpen
+            // doesn't touch _lightingHandleOpen.
+            Corsair._lightingHandleOpen = false;
+            Corsair._lightingHandleEndpoint = null;
         }
     } else {
         device.log("Pause-for-Web-Hub DISABLED — resuming normal lighting render");
+        if (Corsair) {
+            // Belt-and-braces: ensure state is reset so first render after
+            // resume triggers an OpenHandle. If user toggled pause→resume
+            // quickly, library's state might still be stale.
+            Corsair._lightingHandleOpen = false;
+            Corsair._lightingHandleEndpoint = null;
+        }
     }
 }
 
@@ -680,17 +694,18 @@ export function Render() {
         return;
     }
 
-	// Web Hub coexistence: when the user enables pauseForWebHub, we stop
-	// pushing lighting frames and release our handle so the browser-based
-	// Web Hub can claim the keyboard. Verified via icue_and_web_app_running
-	// + icue_murials_and_web_app_running captures: continuous writeEndpoint
+	// Web Hub coexistence: when the user enables pauseForWebHub we stop
+	// pushing lighting frames so the browser-based Web Hub can claim the
+	// USB channel. Verified via icue_and_web_app_running +
+	// icue_murials_and_web_app_running captures: continuous writeEndpoint
 	// pushes saturate the channel and block Web Hub's own protocol I/O —
 	// happens with iCUE too when Mural Canvas is running, so it's not a
 	// SignalRGB bug, just an inherent firmware/USB-bandwidth limit.
+	// Handle closing happens once in onpauseForWebHubChanged, NOT here per
+	// frame — Render runs at 60+ FPS and a close per tick would flood the
+	// log with `Handle is not open!` errors (CloseHandleIfOpen always logs,
+	// even when nothing to close).
 	if (typeof pauseForWebHub !== "undefined" && pauseForWebHub) {
-		if (wiredDevice && Corsair && Corsair.CloseHandleIfOpen) {
-			try { Corsair.CloseHandleIfOpen("Lighting", 1); } catch (_) {}
-		}
 		return;
 	}
 
