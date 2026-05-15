@@ -705,8 +705,14 @@ function initializeDevice(deviceConfig, deviceID = 1) {
 	device.log(`Device Uses Lighting Controller Scheme: ${deviceConfig.isLightingController}`);
 	device.log("Let There Be Light!");
 
-	deviceConfig.supportsBattery = Corsair.FetchBatterySupport(deviceID);
-	device.log(`Device Battery Support: ${deviceConfig.supportsBattery}`);
+	// Skip the battery probe for known wired keyboards — they don't have one,
+	// the FetchProperty(0x0F) call just logs "Property is not supported".
+	if (WIRED_KEYBOARD_PIDS.has(devicePID)) {
+		deviceConfig.supportsBattery = false;
+	} else {
+		deviceConfig.supportsBattery = Corsair.FetchBatterySupport(deviceID);
+		device.log(`Device Battery Support: ${deviceConfig.supportsBattery}`);
+	}
 
 	if(deviceConfig.supportsBattery) {
 		device.addFeature("battery");
@@ -733,8 +739,13 @@ function initializeDevice(deviceConfig, deviceID = 1) {
 
 	device.pause(5);
 
-	if(Corsair.FetchDPISupport(deviceID)) {
-
+	// Skip the DPI probes for known wired keyboards — they aren't mice and
+	// don't expose DPI / DPI X / DPI Profile properties. FetchDPISupport
+	// would fire three FetchProperty calls that always fail. We still need
+	// addPollingRates here for the keyboard's polling rate dropdown.
+	if (WIRED_KEYBOARD_PIDS.has(devicePID)) {
+		addPollingRates(deviceID);
+	} else if (Corsair.FetchDPISupport(deviceID)) {
 		addPollingRates(deviceID, true);
 
 		if(deviceConfig.hasSniperButton) {
