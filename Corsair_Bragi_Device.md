@@ -218,15 +218,6 @@ The full mapping is encoded as `KEY_TABLE` in `Corsair_Vanguard_Pro_96.js`.
 - iCUE opens lots of `0x6D6X` endpoints to read per-key remap tables for its own UI — these are pure reads and the plugin can skip them entirely without losing functionality.
 - `openEndpoint(0, 0x24)` and `openEndpoint(0, 0x36)` both come back with status `0x06` (rejected) on the Vanguard Pro 96. The actual lighting endpoint is `0x22` (the upstream Bragi naming "LightingController"). iCUE's probes of the older endpoints are vestigial.
 
-
-FILTER Wireshark: (((((((((((((((((((((((((((((((((((((((((((((((((((((((!(usb.dst == "1.17.1")) && !(usb.dst == "1.3.9")) && !(usb.dst == "1.7.1")) && !(usb.dst == "1.5.0")) && !(usb.dst == "1.19.0")) && !(usb.src == "1.3.9")) && !(usb.src == "1.7.1")) && !(usb.src == "1.5.0")) && !(usb.src == "1.19.0")) && !(usb.src == "1.17.1")) && !(usb.dst == "1.17.3")) && !(usb.src == "1.17.3")) && !(usb.src == "1.17.0")) && !(usb.dst == "1.17.0")) && !(usb.dst == "1.18.1")) && !(usb.src == "1.18.1")) && !(usb.src == "1.11.0")) && !(usb.dst == "1.11.0")) && !(usb.dst == "1.1.0")) && !(usb.dst == "1.18.0")) && !(usb.src == "1.8.0")) && !(usb.dst == "1.8.0")) && !(usb.src == "1.3.0")) && !(usb.dst == "1.3.0")) && !(usb.dst == "1.10.0")) && !(usb.src == "1.9.0")) && !(usb.src == "1.15.0")) && !(usb.dst == "1.15.0")) && !(usb.dst == "1.14.0")) && !(usb.src == "1.13.0")) && !(usb.src == "1.14.0")) && !(usb.src == "1.18.0")) && !(usb.dst == "1.9.0")) && !(usb.dst == "1.2.0")) && !(usb.src == "1.2.0")) && !(usb.src == "1.10.0")) && !(usb.src == "1.4.0")) && !(usb.src == "1.1.0")) && !(usb.dst == "1.4.0")) && !(usb.dst == "1.13.0")) && !(usb.dst == "1.6.0")) && !(usb.dst == "1.12.0")) && !(usb.dst == "1.7.0")) && !(usb.src == "1.7.0")) && !(usb.src == "1.6.0")) && !(usb.src == "1.12.0")) && !(usb.dst == "1.25.3")) && !(usb.src == "1.25.3")) && !(usb.dst == "1.25.1")) && !(usb.src == "1.25.1")) && !(usb.dst == "1.25.0")) && !(usb.src == "1.25.0")) && !(usb.src == "1.6.1")) && !(usb.dst == "1.6.1")) && !(usb.src == "1.6.2")) && !(usb.dst == "1.6.2")
-
-
-97 Normale Taste + 6 seitentasten + LCD Display
-
-
-https://github.com/dmaynor/keyboard-oled-re
-
 ---
 
 ## Addendum 2026-05-15 — FlashTap and Actuation dual paths, knob push, LCD corner
