@@ -39,6 +39,7 @@ rapidTriggerSensitivity:readonly
 actuationPoint:readonly
 gameModeActuationPoint:readonly
 flashTapHotkey:readonly
+pauseForWebHub:readonly
 gameModePollRate:readonly
 knobModeMedia:readonly
 knobModeVerticalScroll:readonly
@@ -68,6 +69,7 @@ export function ControllableParameters(){
         {"property":"gameModeColor", "group":"lighting", "label":"Game Mode Color", description: "The color used when Game Mode is active. Leave at #000000 to use Forced Color setting", "min":"0", "max":"360", "type":"color", "default":"#FF0000"},
         {"property":"gameModeForceColor", "group":"lighting", "label":"Game Mode Forces Lighting", description: "When enabled, Game Mode will always use Forced Color mode (ignoring Canvas). When disabled, Game Mode respects the Lighting Mode setting", "type":"boolean", "default":"true"},
         {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash while Fn is held down. Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
+        {"property":"pauseForWebHub", "group":"", "label":"Pause for Corsair Web Hub", description: "Enable this before opening the Corsair Web Hub in a browser. SignalRGB stops pushing lighting frames and releases the lighting handle so the Web Hub can claim it. Disable again to resume normal RGB control. (Continuous lighting writes saturate the keyboard's USB channel — even iCUE blocks the Web Hub when running heavy lighting effects like Mural Canvas.)", "type":"boolean", "default":false},
     ];
 
     if (_isProModel()) {
@@ -283,6 +285,22 @@ function syncGameModeFromHardware() {
 export function ongameModeChanged() {
     if (!wiredDevice) return;
     setHardwareGameMode(gameMode);
+}
+
+export function onpauseForWebHubChanged() {
+    // Toggle on  → immediately release the lighting handle so the Web Hub
+    //              can claim the keyboard on the next browser connect.
+    //              Render() bail-out then keeps us idle until toggle off.
+    // Toggle off → resume normal operation. Render() will re-open the
+    //              lighting handle on its first SendRGBData call.
+    if (pauseForWebHub) {
+        device.log("Pause-for-Web-Hub ENABLED — releasing lighting handle and stopping render writes");
+        if (wiredDevice && Corsair && Corsair.CloseHandleIfOpen) {
+            try { Corsair.CloseHandleIfOpen("Lighting", 1); } catch (_) {}
+        }
+    } else {
+        device.log("Pause-for-Web-Hub DISABLED — resuming normal lighting render");
+    }
 }
 
 
@@ -661,6 +679,20 @@ export function Render() {
     if (Date.now() < pollRateRebootUntil) {
         return;
     }
+
+	// Web Hub coexistence: when the user enables pauseForWebHub, we stop
+	// pushing lighting frames and release our handle so the browser-based
+	// Web Hub can claim the keyboard. Verified via icue_and_web_app_running
+	// + icue_murials_and_web_app_running captures: continuous writeEndpoint
+	// pushes saturate the channel and block Web Hub's own protocol I/O —
+	// happens with iCUE too when Mural Canvas is running, so it's not a
+	// SignalRGB bug, just an inherent firmware/USB-bandwidth limit.
+	if (typeof pauseForWebHub !== "undefined" && pauseForWebHub) {
+		if (wiredDevice && Corsair && Corsair.CloseHandleIfOpen) {
+			try { Corsair.CloseHandleIfOpen("Lighting", 1); } catch (_) {}
+		}
+		return;
+	}
 
 	readDeviceNotifications();
 
