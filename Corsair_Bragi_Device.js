@@ -37,6 +37,7 @@ fnHighlightColor:readonly
 rapidTrigger:readonly
 rapidTriggerSensitivity:readonly
 actuationPoint:readonly
+gameModeActuationPoint:readonly
 gameModePollRate:readonly
 knobModeMedia:readonly
 knobModeVerticalScroll:readonly
@@ -70,9 +71,11 @@ export function ControllableParameters(){
 
     if (_isProModel()) {
         params.push(
-            {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Keys register based on direction of motion (press vs release) instead of a fixed depth. Reduces input lag for fast double-taps.", "type":"boolean", "default":false},
+            {"property":"flashTap", "group":"", "label":"FlashTap (SOCD)", description:"Resolves simultaneous opposing key presses (e.g. A and D held together) by ignoring the earlier key and only registering the latest. Useful for fast counter-strafing in shooters.", "type":"boolean", "default":false},
+            {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Keys register based on direction of motion (press vs release) instead of a fixed depth. Reduces input lag for fast double-taps. Only effective while Game Mode is on.", "type":"boolean", "default":false},
             {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"How far a key must move before it can re-trigger. Lower = faster repeated activations. Only effective while Rapid Trigger is on.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
-            {"property":"actuationPoint", "group":"", "label":"Key Actuation Point (mm)", description:"How far a key must travel before it registers. Lower = more sensitive. Affects all keys. Only active while Game Mode is on.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
+            {"property":"actuationPoint", "group":"", "label":"Key Actuation Point — Normal (mm)", description:"How far a key must travel before it registers when Game Mode is OFF. Lower = more sensitive. Applied to all keys.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
+            {"property":"gameModeActuationPoint", "group":"", "label":"Key Actuation Point — Game Mode (mm)", description:"Actuation point applied when Game Mode is ON. Typically set lower (e.g. 0.5–1.0mm) for gaming responsiveness while the Normal value stays at typing-friendly distances.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"1.0"},
         );
     }
 
@@ -281,6 +284,11 @@ export function ongameModeChanged() {
     setHardwareGameMode(gameMode);
 }
 
+export function onflashTapChanged() {
+    if (!wiredDevice) return;
+    setHardwareFlashTap(flashTap);
+}
+
 // Mirror of the keyboard's hardware FlashTap (SOCD) state. Same pattern as
 // `gameModeActive`: kept in sync with both the UI toggle and the physical
 // Fn + Right Shift chord on the keyboard.
@@ -344,9 +352,12 @@ function writeRapidTriggerConfig() {
     const sens10 = Math.max(1, Math.min(10, Math.round(sensitivityValue * 10)));
     const rtFlag = rapidTrigger ? 0x01 : 0x00;
 
-    // Actuation point in 1/10mm. UI dropdown spans 0.3–3.6mm matching iCUE.
-    // Clamp defensively in case the property is missing or malformed.
-    const actuationStr = (typeof actuationPoint === "string") ? actuationPoint : "2.0";
+    // This function is the GM-ON path — read gameModeActuationPoint (the
+    // separate UI value for in-Game-Mode use). Falls back to actuationPoint
+    // or 2.0mm if missing. Clamp defensively to firmware-valid range.
+    const actuationStr = (typeof gameModeActuationPoint === "string") ? gameModeActuationPoint
+                       : (typeof actuationPoint === "string") ? actuationPoint
+                       : "1.0";
     const actuation10 = Math.max(3, Math.min(36, Math.round(parseFloat(actuationStr) * 10)));
 
     // Byte 5 ("sec clamp") tracks the actuation point in the iCUE captures.
@@ -456,7 +467,21 @@ export function onrapidTriggerSensitivityChanged() {
 }
 
 export function onactuationPointChanged() {
-    writeActuationForCurrentMode();
+    // "Normal" actuation — only applies when GM is OFF. If GM is currently
+    // on the change is stored but only takes effect when the user leaves
+    // Game Mode (applyGameModeDependencies will pick it up via the dispatch).
+    if (!gameModeActive && _isProModel()) {
+        writeGlobalActuationNoGM();
+    }
+}
+
+export function ongameModeActuationPointChanged() {
+    // "Game Mode" actuation — only applies when GM is currently ON. Stored
+    // for later if GM is off; applyGameModeDependencies re-applies on GM
+    // engage so the saved value sticks.
+    if (gameModeActive && _isProModel()) {
+        writeRapidTriggerConfig();
+    }
 }
 
 const devFlags = false;
