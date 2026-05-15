@@ -38,6 +38,7 @@ rapidTrigger:readonly
 rapidTriggerSensitivity:readonly
 actuationPoint:readonly
 gameModeActuationPoint:readonly
+flashTapHotkey:readonly
 gameModePollRate:readonly
 knobModeMedia:readonly
 knobModeVerticalScroll:readonly
@@ -71,7 +72,7 @@ export function ControllableParameters(){
 
     if (_isProModel()) {
         params.push(
-            {"property":"flashTap", "group":"", "label":"FlashTap (SOCD)", description:"Resolves simultaneous opposing key presses (e.g. A and D held together) by ignoring the earlier key and only registering the latest. Useful for fast counter-strafing in shooters.", "type":"boolean", "default":false},
+            {"property":"flashTapHotkey", "group":"", "label":"FlashTap Hotkey (Fn + Right Shift)", description:"Enables the Fn+Right Shift chord to toggle FlashTap (SOCD — resolves simultaneous opposing key presses like A+D for counter-strafing). Disable if you accidentally trigger it during typing. The keyboard remembers FlashTap state across sessions regardless of this setting; this only controls whether the chord works.", "type":"boolean", "default":true},
             {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Keys register based on direction of motion (press vs release) instead of a fixed depth. Reduces input lag for fast double-taps. Only effective while Game Mode is on.", "type":"boolean", "default":false},
             {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"How far a key must move before it can re-trigger. Lower = faster repeated activations. Only effective while Rapid Trigger is on.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
             {"property":"actuationPoint", "group":"", "label":"Key Actuation Point — Normal (mm)", description:"How far a key must travel before it registers when Game Mode is OFF. Lower = more sensitive. Applied to all keys.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
@@ -284,10 +285,6 @@ export function ongameModeChanged() {
     setHardwareGameMode(gameMode);
 }
 
-export function onflashTapChanged() {
-    if (!wiredDevice) return;
-    setHardwareFlashTap(flashTap);
-}
 
 // Mirror of the keyboard's hardware FlashTap (SOCD) state. Same pattern as
 // `gameModeActive`: kept in sync with both the UI toggle and the physical
@@ -392,7 +389,7 @@ function writeRapidTriggerConfig() {
         0x0e, 0x00, 0x00, 0x00].concat(payload));
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
 
-    device.log(`Actuation @ ${(actuation10/10).toFixed(1)}mm — Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity` + (gameModeActive ? "" : " — WARNING: Game Mode OFF, firmware will ignore"));
+    device.log(`Actuation @ ${(actuation10/10).toFixed(1)}mm — Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity (GM-on path, endpoint 0x48)`);
 }
 
 // Per-key actuation table key IDs, in the exact order iCUE writes them.
@@ -458,12 +455,20 @@ function writeActuationForCurrentMode() {
 }
 
 export function onrapidTriggerChanged() {
-    // RT only meaningful in GM — outside GM the write is silently dropped.
-    writeRapidTriggerConfig();
+    // RT block is the GM-on firmware path (endpoint 0x48). Outside GM the
+    // firmware drops the write, but the new UI value is stored — it gets
+    // re-applied automatically when GM engages via applyGameModeDependencies
+    // → writeActuationForCurrentMode. So we only write here when GM is
+    // currently active; otherwise the value just waits.
+    if (gameModeActive && _isProModel()) {
+        writeRapidTriggerConfig();
+    }
 }
 
 export function onrapidTriggerSensitivityChanged() {
-    writeRapidTriggerConfig();
+    if (gameModeActive && _isProModel()) {
+        writeRapidTriggerConfig();
+    }
 }
 
 export function onactuationPointChanged() {
@@ -1227,14 +1232,21 @@ function processKeyboardMacros(bitIdx, state, keyName) {
 		consumed = true;
 	}
 
-	// Fn + Right Shift toggles FlashTap (SOCD). Same pattern: the keyboard
-	// emits a Right-Shift-down event while Fn is held but waits for the
-	// host to echo `setProperty(0x0001)` on conn=0x03 to actually engage
-	// the feature. Reference: flashtap_on_then_off.pcapng frames 23 / 25.
+	// Fn + Right Shift toggles FlashTap (SOCD). The keyboard emits a
+	// Right-Shift-down event while Fn is held but waits for the host to
+	// echo the SetProperty write to actually engage. Reference:
+	// flashtap_on_then_off.pcapng frames 23/25.
+	// Gated on the `flashTapHotkey` UI toggle so the user can disable the
+	// chord entirely if they keep triggering it accidentally during typing.
+	// Default ON to preserve existing keyboard behaviour.
 	if(keyName === "Right Shift" && state && FnEnabled) {
-		const newState = !flashTapActive;
-
-		setHardwareFlashTap(newState);
+		const hotkeyAllowed = (typeof flashTapHotkey === "undefined") ? true : !!flashTapHotkey;
+		if (hotkeyAllowed) {
+			const newState = !flashTapActive;
+			setHardwareFlashTap(newState);
+		} else {
+			device.log("Fn+Right Shift ignored — FlashTap hotkey disabled in UI settings");
+		}
 		consumed = true;
 	}
 
