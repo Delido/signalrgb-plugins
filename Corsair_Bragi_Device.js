@@ -41,20 +41,47 @@ gameModePollRate:readonly
 knobModeMedia:readonly
 knobModeVerticalScroll:readonly
 */
+
+// Only the Pro 96 has MGX Hall-Effect (magnetic) switches, which is what
+// allows Rapid Trigger + adjustable actuation point. The non-Pro Vanguard
+// 96 (0x2B0D) uses traditional mechanical switches and silently drops
+// those writes — no point showing the UI controls there.
+const PRO_ONLY_PIDS = new Set([0x2B0E]);
+
+function _isProModel() {
+    try {
+        const pid = (typeof device !== "undefined" && device.productId) ? device.productId() : null;
+        if (pid === null) return true;          // unknown context → show props by default (safer than hiding on Pro)
+        return PRO_ONLY_PIDS.has(pid);
+    } catch (_) {
+        return true;
+    }
+}
+
 export function ControllableParameters(){
-    return [
+    const params = [
         {"property":"shutdownColor", "group":"lighting", "label":"Shutdown Color", description: "This color is applied to the device when the System, or SignalRGB is shutting down", "min":"0", "max":"360", "type":"color", "default":"#000000"},
         {"property":"LightingMode", "group":"lighting", "label":"Lighting Mode", description: "Determines where the device's RGB comes from. Canvas will pull from the active Effect, while Forced will override it to a specific color", "type":"combobox", "values":["Canvas", "Forced"], "default":"Canvas"},
         {"property":"forcedColor", "group":"lighting", "label":"Forced Color", description: "The color used when 'Forced' Lighting Mode is enabled", "min":"0", "max":"360", "type":"color", "default":"#009bde"},
         {"property":"gameModeColor", "group":"lighting", "label":"Game Mode Color", description: "The color used when Game Mode is active. Leave at #000000 to use Forced Color setting", "min":"0", "max":"360", "type":"color", "default":"#FF0000"},
         {"property":"gameModeForceColor", "group":"lighting", "label":"Game Mode Forces Lighting", description: "When enabled, Game Mode will always use Forced Color mode (ignoring Canvas). When disabled, Game Mode respects the Lighting Mode setting", "type":"boolean", "default":"true"},
         {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash while Fn is held down. Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
-        {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Keys register based on direction of motion (press vs release) instead of a fixed depth. Reduces input lag for fast double-taps.", "type":"boolean", "default":false},
-        {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"How far a key must move before it can re-trigger. Lower = faster repeated activations. Only effective while Rapid Trigger is on.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
-        {"property":"actuationPoint", "group":"", "label":"Key Actuation Point (mm)", description:"How far a key must travel before it registers. Lower = more sensitive. Affects all keys. Only active while Game Mode is on.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
+    ];
+
+    if (_isProModel()) {
+        params.push(
+            {"property":"rapidTrigger", "group":"", "label":"Rapid Trigger", description:"Keys register based on direction of motion (press vs release) instead of a fixed depth. Reduces input lag for fast double-taps.", "type":"boolean", "default":false},
+            {"property":"rapidTriggerSensitivity", "group":"", "label":"Rapid Trigger Sensitivity (mm)", description:"How far a key must move before it can re-trigger. Lower = faster repeated activations. Only effective while Rapid Trigger is on.", "type":"combobox", "values":["0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0"], "default":"0.1"},
+            {"property":"actuationPoint", "group":"", "label":"Key Actuation Point (mm)", description:"How far a key must travel before it registers. Lower = more sensitive. Affects all keys. Only active while Game Mode is on.", "type":"combobox", "values":["0.3","0.4","0.5","0.6","0.7","0.8","0.9","1.0","1.1","1.2","1.3","1.4","1.5","1.6","1.7","1.8","1.9","2.0","2.1","2.2","2.3","2.4","2.5","2.6","2.7","2.8","2.9","3.0","3.1","3.2","3.3","3.4","3.5","3.6"], "default":"2.0"},
+        );
+    }
+
+    params.push(
         {"property":"knobModeMedia", "group":"", "label":"Knob – Media Mode", description:"Include Media mode in the Fn+F12 cycle. Turn = Skip Forward/Backward, Push = Play/Pause.", "type":"boolean", "default":true},
         {"property":"knobModeVerticalScroll", "group":"", "label":"Knob – Vertical Scroll Mode", description:"Include Vertical Scroll mode in the Fn+F12 cycle. Turn = Page Up/Down. No push action.", "type":"boolean", "default":true},
-    ];
+    );
+
+    return params;
 }
 
 // Mirror of the keyboard's hardware Game Mode state. Updated whenever the UI
@@ -204,7 +231,9 @@ function applyGameModeDependencies() {
     // actuation point only "sticks" once GM is active. Without this, a user
     // who never touches the UI after GM toggles would get the firmware
     // default (2.0mm) instead of their configured value.
-    if (gameModeActive) {
+    // Only meaningful on the Pro model — non-Pro has mechanical switches
+    // with no adjustable actuation, so the write would be a silent no-op.
+    if (gameModeActive && _isProModel()) {
         writeRapidTriggerConfig();
     }
 
