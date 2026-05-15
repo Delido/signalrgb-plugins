@@ -226,16 +226,15 @@ function applyGameModeDependencies() {
         setHardwareFlashTap(true);
     }
 
-    // Re-apply the actuation/RT block whenever Game Mode engages. Firmware
-    // drops these writes silently outside Game Mode, so the user's chosen
-    // actuation point only "sticks" once GM is active. Without this, a user
-    // who never touches the UI after GM toggles would get the firmware
-    // default (2.0mm) instead of their configured value.
-    // Only meaningful on the Pro model — non-Pro has mechanical switches
-    // with no adjustable actuation, so the write would be a silent no-op.
-    if (gameModeActive && _isProModel()) {
-        writeRapidTriggerConfig();
-    }
+    // Re-apply actuation whenever Game Mode toggles. There are TWO firmware
+    // paths and we have to pick the right one each time:
+    //   GM ON  → writeRapidTriggerConfig (endpoint 0x48, 14-byte RT block)
+    //   GM OFF → writeGlobalActuationNoGM (endpoint 0x32, 96-key table)
+    // Both store the user's chosen actuation point but use different
+    // firmware property/endpoint addresses; the "other" path is silently
+    // dropped in each state. writeActuationForCurrentMode picks correctly.
+    // Pro-only: non-Pro has mechanical switches with no adjustable actuation.
+    writeActuationForCurrentMode();
 
     // Polling rate auto-switch. Only writes when:
     //   - settingControl is active (user wants us to manage this)
@@ -288,8 +287,17 @@ export function ongameModeChanged() {
 let flashTapActive = false;
 
 function setHardwareFlashTap(enabled) {
+    // FlashTap has two firmware property paths depending on Game Mode state:
+    //   GM ON  → setProperty(0x0100, V) — captured in flashtap_engage_disengage.pcapng
+    //   GM OFF → setProperty(0xFB,   V) — captured in flashtap_no_gamemode.pcapng (2026-05-15)
+    // The 0x0100 path is silently dropped when GM is OFF, the 0xFB path
+    // works regardless. iCUE always uses 0xFB when toggling FlashTap from
+    // outside Game Mode. We pick the correct path based on current GM state.
     if (!gameModeActive) {
-        device.log(`FlashTap ${enabled ? "engage" : "release"} attempted but Game Mode is OFF — write will be IGNORED by the keyboard.`);
+        flashTapActive = !!enabled;
+        device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0xFB, 0x00, flashTapActive ? 0x01 : 0x00], 1024);
+        device.log(`FlashTap ${flashTapActive ? "engaged" : "released"} via setProperty(0xFB) (GM-independent path)`);
+        refreshKeyboardLighting();
         return;
     }
 
@@ -376,7 +384,70 @@ function writeRapidTriggerConfig() {
     device.log(`Actuation @ ${(actuation10/10).toFixed(1)}mm — Rapid Trigger ${rtFlag ? "ENGAGED" : "RELEASED"} @ ${(sens10/10).toFixed(1)}mm sensitivity` + (gameModeActive ? "" : " — WARNING: Game Mode OFF, firmware will ignore"));
 }
 
+// Per-key actuation table key IDs, in the exact order iCUE writes them.
+// Extracted from dumps/corsair_keyboard/actuation_global_no_gamemode_0.5mm
+// .pcapng frame 15 payload. 96 entries match the 96-key layout. iCUE
+// writes one `01 <value×10> <key_id>` triple per entry to endpoint 0x32,
+// preceded by a 4-byte sub-header `30 00 61 0e` and followed by a trailing
+// 2-byte `01 <value×10>` (purpose unknown but present in every capture).
+const ACTUATION_KEY_TABLE = [
+    0x04, 0x06, 0x42, 0x17, 0x14, 0x09, 0x55, 0x61, 0x3a, 0x37, 0x1b, 0x64,
+    0x46, 0x50, 0x1a, 0x45, 0x15, 0x4c, 0x35, 0x88, 0x33, 0x3c, 0x30, 0x0f,
+    0x1d, 0x3f, 0x29, 0x39, 0x07, 0x0d, 0x6e, 0x19, 0x6b, 0x59, 0x5a, 0x6a,
+    0x5d, 0x1e, 0x2d, 0x2b, 0x13, 0x2e, 0x63, 0x25, 0x11, 0x23, 0x7a, 0x2f,
+    0x34, 0x6c, 0x22, 0x53, 0x16, 0x6f, 0x0b, 0x3e, 0x54, 0x56, 0x0a, 0x40,
+    0x26, 0x24, 0x12, 0x08, 0x5e, 0x44, 0x5b, 0x5f, 0x43, 0x21, 0x60, 0x1f,
+    0x3d, 0x18, 0x0c, 0x58, 0x05, 0x2a, 0x51, 0x36, 0x3b, 0x41, 0x2c, 0x1c,
+    0x69, 0x52, 0x38, 0x32, 0x28, 0x10, 0x62, 0x57, 0x27, 0x20, 0x4f, 0x5c,
+];
+
+// Global actuation write WITHOUT Game Mode. Uses endpoint 0x32 (not 0x48
+// like the GM-path) and a 294-byte payload with one triple per key, plus
+// header + trailer. Verified byte-for-byte against iCUE's behaviour in
+// actuation_global_no_gamemode_0.5mm.pcapng — replicates the same payload
+// with only the value byte parameterised.
+function writeGlobalActuationNoGM() {
+    const actuationStr = (typeof actuationPoint === "string") ? actuationPoint : "2.0";
+    const v10 = Math.max(3, Math.min(36, Math.round(parseFloat(actuationStr) * 10)));
+
+    const payload = [0x30, 0x00, 0x61, 0x0e];          // 4-byte sub-header
+    for (const key of ACTUATION_KEY_TABLE) {
+        payload.push(0x01, v10, key);                  // 96 triples × 3 bytes = 288
+    }
+    payload.push(0x01, v10);                           // trailing 2 bytes
+    // Total: 4 + 288 + 2 = 294 bytes = 0x0126 LE32 (matches capture frame 15 length)
+
+    const lenLE32 = [
+        payload.length & 0xff,
+        (payload.length >> 8) & 0xff,
+        (payload.length >> 16) & 0xff,
+        (payload.length >> 24) & 0xff,
+    ];
+
+    // 4-packet sequence on handle=0x02, endpoint=0x32
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x32]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02].concat(lenLE32).concat(payload));
+    sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
+
+    device.log(`Actuation @ ${(v10/10).toFixed(1)}mm (no-GM path, endpoint 0x32, 96 keys)`);
+}
+
+// Pick the right actuation/RT write path based on Game Mode state.
+//   GM ON  → writeRapidTriggerConfig (endpoint 0x48, includes RT settings)
+//   GM OFF → writeGlobalActuationNoGM (endpoint 0x32, actuation only —
+//            RT settings have no effect outside GM anyway).
+function writeActuationForCurrentMode() {
+    if (!_isProModel()) return;
+    if (gameModeActive) {
+        writeRapidTriggerConfig();
+    } else {
+        writeGlobalActuationNoGM();
+    }
+}
+
 export function onrapidTriggerChanged() {
+    // RT only meaningful in GM — outside GM the write is silently dropped.
     writeRapidTriggerConfig();
 }
 
@@ -385,7 +456,7 @@ export function onrapidTriggerSensitivityChanged() {
 }
 
 export function onactuationPointChanged() {
-    writeRapidTriggerConfig();
+    writeActuationForCurrentMode();
 }
 
 const devFlags = false;
@@ -519,6 +590,14 @@ export function Initialize() {
 
 	if (gameMode) setHardwareGameMode(gameMode);
 	if (flashTap) setHardwareFlashTap(flashTap);
+
+	// Apply the user's actuation point on startup regardless of GM state.
+	// setHardwareGameMode (above) already covers the GM=on case via
+	// applyGameModeDependencies, but if GM is OFF at init we still want the
+	// configured actuation to stick — via the no-GM endpoint 0x32 path.
+	if (!gameModeActive) {
+		writeActuationForCurrentMode();
+	}
 
 	// Knob auf definierten Start-State: enabled[0] = Volume (siehe
 	// getEnabledKnobModes — Volume ist hardcoded immer aktiv und steht in
