@@ -758,13 +758,52 @@ export function Render() {
 // Software-Mode hängen, was Fn+F12 / Drehknopf etc. auch nach Plugin-
 // Disable kaputt lässt.
 function switchToHardwareModeV2() {
+    // Empirically the first call after a long Software-Mode session was
+    // failing (user observation: disable plugin → keyboard black but
+    // still in SW Mode; re-enable + disable again works). Root cause is
+    // likely that the Lighting handle stays open during Render and the
+    // mode-switch SetProperty races / gets dropped while the handle is
+    // still mid-write. Belt-and-braces: close all handles explicitly,
+    // reset JS-side state, pause a tick so the firmware has time to
+    // settle, THEN send the mode-switch bytes. Verify after via
+    // FetchProperty; if still in SW, retry once.
+    if (Corsair) {
+        try { Corsair.CloseHandleIfOpen("Lighting", 1); } catch (_) {}
+        try { Corsair.CloseHandleIfOpen("Background", 1); } catch (_) {}
+        try { Corsair.CloseHandleIfOpen("Auxiliary", 1); } catch (_) {}
+        Corsair._lightingHandleOpen = false;
+        Corsair._lightingHandleEndpoint = null;
+    }
+    device.pause(30);
+
     // sendAndRead statt device.write — iCUE wartet zwischen den beiden
     // Paketen auf den Firmware-ACK (siehe back_to_hardware_modus.pcapng
     // frame 7 → response → frame 11). Ohne ACK-Wait kommt der zweite
     // Write zu früh und die Firmware verwirft den Session-Reset.
     sendAndRead([0x00, 0x00, 0x01, 0x03, 0x01, 0x03, 0x00, 0x01]);
     sendAndRead([0x00, 0x00, 0x01, 0x03, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
-    device.log("Switched to Hardware mode via v2 protocol (conn=0x03)");
+
+    // Verify the switch actually took effect. FetchProperty(0x03) returns
+    // 0x01 for Hardware, 0x02 for Software. Retry once if firmware silently
+    // dropped the write (matches user-reported "first disable fails, second works").
+    let resultingMode = -1;
+    try { resultingMode = Corsair.FetchProperty(0x03, 1); } catch (_) {}
+    if (resultingMode === 0x01) {
+        device.log("Switched to Hardware mode via v2 protocol (verified)");
+        return;
+    }
+    device.log(`Hardware-mode switch did NOT verify (FetchProperty(0x03) returned ${resultingMode}) — retrying once`);
+
+    device.pause(50);
+    sendAndRead([0x00, 0x00, 0x01, 0x03, 0x01, 0x03, 0x00, 0x01]);
+    sendAndRead([0x00, 0x00, 0x01, 0x03, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
+
+    try { resultingMode = Corsair.FetchProperty(0x03, 1); } catch (_) {}
+    if (resultingMode === 0x01) {
+        device.log("Switched to Hardware mode via v2 protocol (verified on retry)");
+    } else {
+        device.log(`Hardware-mode switch STILL did not verify (mode=${resultingMode}). Re-enable+disable the plugin to recover.`);
+    }
 }
 
 export function Shutdown(SystemSuspending) {
@@ -772,7 +811,10 @@ export function Shutdown(SystemSuspending) {
 	if(SystemSuspending){
 		// Go Dark on System Sleep/Shutdown
 		if(wiredDevice) {
+			device.log("Shutdown: painting black canvas");
 			UpdateRGB(wiredDevice, undefined, "#000000");
+			device.pause(20);
+			device.log("Shutdown: switching to Hardware Mode");
 			switchToHardwareModeV2();
 			// Legacy Corsair.SetMode("Hardware") absichtlich NICHT mehr für
 			// wiredDevice — der nutzt deviceID|0x08 (byte2=0x09) was die
@@ -787,7 +829,10 @@ export function Shutdown(SystemSuspending) {
 		}
 	}else{
 		if(wiredDevice) {
+			device.log("Shutdown: painting shutdownColor canvas");
 			UpdateRGB(wiredDevice, undefined, shutdownColor);
+			device.pause(20);
+			device.log("Shutdown: switching to Hardware Mode");
 			switchToHardwareModeV2();
 		}
 
