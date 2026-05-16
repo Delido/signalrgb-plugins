@@ -75,6 +75,7 @@ What these plugins offer beyond plain RGB — everything is configurable directl
 ### ASUS GPUs (Ampere / Lovelace) — ⚠️ SMBUS
 
 - **RGB control of the GPU backplate / shroud** for ASUS RTX 30 / 40 series cards via SMBUS.
+- **Only built and tested for a single graphics card in Horizontal Mounting Orientation.** Other models and Vertical mount are present in the plugin but untested — use at your own risk.
 - See the SMBUS warning above.
 
 ## Installation
