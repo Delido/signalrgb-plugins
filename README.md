@@ -53,7 +53,8 @@ What these plugins offer beyond plain RGB — everything is configurable directl
 
 ### Logitech G PRO X 2 SUPERSTRIKE & modern Logitech mice
 
-- **RGB control** for the G PRO X / G PRO Superlight / Superstrike family.
+> **Note:** the G PRO X 2 SUPERSTRIKE has **no RGB lighting** — this plugin is purely for configuring its hardware settings from inside SignalRGB. Other modern Logitech mice in the plugin (e.g. older G PRO X 2 / Superlight variants) still expose RGB normally.
+
 - **DPI stages** (1–5) with individual values, plus **DPI Stage Rollover** for cyclic switching.
 - **Polling rate** from `125 Hz` to `8000 Hz`, with separate values for cable and Lightspeed operation.
 - **Trigger Force (Superstrike-only)**: actuation pressure of the inductive switches, **per mouse button** (level 1–10).
@@ -62,10 +63,23 @@ What these plugins offer beyond plain RGB — everything is configurable directl
 - **Onboard Memory Mode** toggle — switches between SignalRGB control and stored hardware settings.
 - **Setting Control lock**: a safety switch that prevents SignalRGB from unintentionally overwriting DPI / polling rate.
 
-### ASUS keyboards, mice, combo devices
+### ASUS ROG Azoth (wired & wireless via Omni dongle)
 
-- **RGB control** for ASUS HID devices (ROG Strix / Falchion / Claymore etc.).
-- **Combo plugin** (`ASUS_Omni_Device`) for devices that expose keyboard and mouse on a single USB interface.
+The Azoth got the most attention in the ASUS plugins — both the keyboard plugin (`ASUS_Keyboard_Protocol.js`) and the Omni dongle plugin (`ASUS_Omni_Device.js`) drive it, including the **2" OLED display** on the top-right of the keyboard:
+
+- **Per-key RGB** with Canvas / Forced Color.
+- **OLED Mode** — `Animation` (plays alongside RGB) or `Banner` (static design, RGB falls back to the stored hardware preset).
+- **OLED Animations** (6 built-in): `ROG Logo`, `Republic of Gamers`, `Cityscape`, `ROG Republic of Gamers`, `Floating Hearts`, `ROG Triangle`.
+- **OLED Banner styles** (6): `Black`, `Diagonal Stripes`, `ROG Diagonal`, `ROG Repeat`, `Checkered`, `Chevron`.
+- **Custom Banner Text** with selectable **font size** (`14px` / `18px` / `24px`) — rendered host-side with embedded 1-bit bitmap fonts (Arial on a 104×46 canvas) and streamed to the OLED, so any ASCII text works without uploading custom images in Armoury Crate.
+- **Device Sleep Timeout** (Off / 1 / 2 / 3 / 5 / 10 minutes).
+- **Key Debounce** (15–50 ms in 5 ms steps) to filter accidental double keystrokes.
+- **Battery indicator** in the SignalRGB UI for the wireless Azoth via the Omni dongle.
+
+### ASUS keyboards, mice, combo devices (other models)
+
+- **RGB control** for additional ASUS HID devices (ROG Strix Scope II 96 Wireless, ROG Falchion, ROG Gladius III Aimpoint etc.).
+- **Combo / dongle plugin** (`ASUS_Omni_Device`) handles wireless devices that share one USB receiver — auto-detects whether a keyboard or mouse is paired and delegates to the right protocol path.
 
 ### Corsair Commander Core
 
