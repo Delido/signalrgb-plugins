@@ -792,7 +792,7 @@ function switchToHardwareModeV2() {
         device.log("Switched to Hardware mode via v2 protocol (verified)");
         return;
     }
-    device.log(`Hardware-mode switch did NOT verify (FetchProperty(0x03) returned ${resultingMode}) — retrying once`);
+    device.log(`Hardware-mode switch did NOT verify (FetchProperty(0x03) returned ${resultingMode}) — retry 1: simple replay`);
 
     device.pause(50);
     sendAndRead([0x00, 0x00, 0x01, 0x03, 0x01, 0x03, 0x00, 0x01]);
@@ -800,9 +800,35 @@ function switchToHardwareModeV2() {
 
     try { resultingMode = Corsair.FetchProperty(0x03, 1); } catch (_) {}
     if (resultingMode === 0x01) {
-        device.log("Switched to Hardware mode via v2 protocol (verified on retry)");
+        device.log("Switched to Hardware mode via v2 protocol (verified on retry 1)");
+        return;
+    }
+
+    // Retry 2: replay the full Bragi-v2 session handshake from Initialize()
+    // first. After ~24 minutes of operation the conn=0x02 session token
+    // appears to expire/stale, and a bare SetProperty on conn=0x03 gets
+    // silently dropped. Re-enable+disable from the SignalRGB UI fixes it
+    // because Initialize() re-runs this handshake. We reproduce that
+    // handshake here so the user doesn't need to manually cycle the plugin.
+    device.log(`Retry 1 also failed (mode=${resultingMode}) — retry 2: full session re-handshake then mode switch`);
+    try {
+        device.set_endpoint(0x02, 0x01, 0xFF42);
+        sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0x3d, 0x78, 0xaf, 0x8b]);
+        sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xcf, 0xde, 0x51, 0x08]);
+        sendAndRead([0x00, 0x00, 0x01, 0x02, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+        sendAndRead([0x00, 0x00, 0x01, 0x00, 0x1b, 0x01, 0xbf, 0xe4, 0x19, 0x3a]);
+        device.pause(30);
+        sendAndRead([0x00, 0x00, 0x01, 0x03, 0x01, 0x03, 0x00, 0x01]);
+        sendAndRead([0x00, 0x00, 0x01, 0x03, 0x1b, 0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
+    } catch (e) {
+        device.log(`Re-handshake threw: ${e}`);
+    }
+
+    try { resultingMode = Corsair.FetchProperty(0x03, 1); } catch (_) {}
+    if (resultingMode === 0x01) {
+        device.log("Switched to Hardware mode via v2 protocol (verified on retry 2 with session re-handshake)");
     } else {
-        device.log(`Hardware-mode switch STILL did not verify (mode=${resultingMode}). Re-enable+disable the plugin to recover.`);
+        device.log(`Hardware-mode switch STILL did not verify (mode=${resultingMode}) after full re-handshake. Re-enable+disable the plugin to recover.`);
     }
 }
 
