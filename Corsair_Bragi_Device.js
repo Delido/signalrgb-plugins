@@ -70,6 +70,7 @@ export function ControllableParameters(){
         {"property":"gameModeForceColor", "group":"lighting", "label":"Game Mode Forces Lighting", description: "When enabled, Game Mode will always use Forced Color mode (ignoring Canvas). When disabled, Game Mode respects the Lighting Mode setting", "type":"boolean", "default":"true"},
         {"property":"fnHighlightColor", "group":"", "label":"Fn Highlight Color", description: "Color the F1–F12 keys flash while Fn is held down. Set to #000000 to disable.", "min":"0", "max":"360", "type":"color", "default":"#FFFFFF"},
         {"property":"pauseForWebHub", "group":"", "label":"Pause for Corsair Web Hub", description: "Enable this before opening the Corsair Web Hub in a browser. SignalRGB stops pushing lighting frames and releases the lighting handle so the Web Hub can claim it. Disable again to resume normal RGB control. (Continuous lighting writes saturate the keyboard's USB channel — even iCUE blocks the Web Hub when running heavy lighting effects like Mural Canvas. CLOSE SIGNALRGB BEFORE FLASHING FIRMWARE.)", "type":"boolean", "default":false},
+        {"property":"debounceTime", "group":"", "label":"Key Debounce Time (ms)", description:"Filters mechanical/magnetic switch noise after a key event. 0 = no filtering (fastest, may chatter on worn switches); higher values delay registration but suppress unintended re-triggers. iCUE default is 0.", "type":"combobox", "values":["0","1","2","3","4","5","6","7","8","9"], "default":"0"},
     ];
 
     if (_isProModel()) {
@@ -536,6 +537,23 @@ export function ongameModeActuationPointChanged() {
     }
 }
 
+// Debounce time. iCUE writes the value to TWO property slots in a pair
+// (props 0x0a and 0x38 on conn=0x02). Encoding is value_byte = ms + 5
+// (verified against entprellzeit_{0,5,9}ms.pcapng: 0→0x05, 5→0x0a, 9→0x0e).
+// Not Game-Mode-gated: the firmware accepts the write regardless of GM.
+function writeDebounceTime() {
+    if (!_isProModel()) return;
+    const ms = parseInt(typeof debounceTime !== "undefined" ? debounceTime : "0", 10) || 0;
+    const val = (ms + 5) & 0xff;
+    device.log(`Setting Debounce Time: ${ms}ms (value=0x${val.toString(16)})`);
+    device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0x0a, 0x00, val], 1024);
+    device.write([0x00, 0x00, 0x01, 0x02, 0x01, 0x38, 0x00, val], 1024);
+}
+
+export function ondebounceTimeChanged() {
+    writeDebounceTime();
+}
+
 const devFlags = false;
 
 export function SubdeviceController() { return devFlags; } //Fix DPI Logic. If you remove too many stages, it blows up.
@@ -675,6 +693,9 @@ export function Initialize() {
 	if (!gameModeActive) {
 		writeActuationForCurrentMode();
 	}
+
+	// Apply debounce time — not GM-gated, just push the saved value.
+	writeDebounceTime();
 
 	// Knob auf definierten Start-State: enabled[0] = Volume (siehe
 	// getEnabledKnobModes — Volume ist hardcoded immer aktiv und steht in
