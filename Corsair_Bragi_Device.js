@@ -116,11 +116,73 @@ function hidRepeat(steps, code) {
 // labels are user-verified by cycling (keyboard_functions.pcapng). Volume
 // is intentionally first — hardcoded as always-enabled (see
 // isKnobModeEnabled) so it can never disappear from the cycle.
+// LCD corner-indicator support (Firmware 2.7.163+). The new firmware exposes
+// a separate connection channel (conn=0x04) that drives the top-right LCD
+// label. We upload two static template payloads ONCE in Initialize() and
+// then per knob-mode-change just send a single setProperty(0x0115)=<value>
+// to switch which icon the LCD shows. Templates and per-mode values
+// reverse-engineered from lcd_{volume,media,scroll}_only.pcapng.
+//
+// Old firmware (2.6.x) silently drops conn=0x04 writes — no-op fallback.
+function _hexToBytes(s) {
+    const out = new Array(s.length >>> 1);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(i * 2, 2), 16);
+    return out;
+}
+// 537-byte template uploaded to conn=0x04, handle 0x01 — per-key state map
+// shared by ALL knob modes (verified byte-identical across captures).
+const LCD_TEMPLATE_537_HEX =
+    "2b0000000000000000000000000000000004000000ff05000000ff06000000ff07000000ff08000000ff09000000ff0a000000ff0b000000ff0c000000ff0d000000ff0e000000ff0f000000ff10ffffffff11000000ff12000000ff13ffffffff14000000ff15000000ff16000000ff17000000ff18000000ff19000000ff1a000000ff1b000000ff1c000000ff1d000000ff1e000000ff1f000000ff20000000ff21000000ff22000000ff23000000ff24000000ff25000000ff26000000ff27000000ff28ffffffff29000000ff2a000000ff2b000000ff2c000000ff2d000000ff2e000000ff2f000000ff30000000ff32000000ff33000000ff34000000ff35000000ff36000000ff37000000ff38000000ff39000000ff3affffffff3bffffffff3cffffffff3dffffffff3effffffff3fffffffff40ffffffff41ffffffff42ffffffff43ffffffff44ffffffff45ffffffff46000000ff4c000000ff4fffffffff50ffffffff51000000ff52000000ff53000000ff54000000ff55000000ff56000000ff57000000ff58000000ff59ffffffff5a000000ff5bffffffff5c000000ff5d000000ff5e000000ff5fffffffff60000000ff61ffffffff62ffffffff63000000ff64000000ff69000000ff6a000000ff6b000000ff6cffffffff6effffffff6f000000ff7affffffff000000000082000000ff83000000ff84000000ff85000000ff86000000ff87000000ff88ffffffff";
+// 413-byte template uploaded to conn=0x04, handle 0x00 — likely the icon
+// pixel buffer / glyph atlas (also byte-identical across modes).
+const LCD_TEMPLATE_413_HEX =
+    "1200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffff000000000000ffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffff000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff000000000000000000000000000000000000000000000000000000ffffffffffff000000000000000000000000000000000000000000000000ffffff000000ffffff000000000000000000ffffff000000ffffffffffff000000000000000000000000000000000000000000000000000000ffffff000000ffffff000000000000000000000000000000000000000000000000000000000000000000ffffff000000000000000000000000000000000000000000000000000000000000000000000000000000ffffff";
+
+// Full LCD-indicator update: open channel + upload BOTH templates + select
+// the icon for `mode`. Designed to be called on every knob-mode change.
+// Yes, this re-uploads ~1 KB of templates per Fn+F12 — but the cost is
+// trivial at human-press frequency and it makes the corner indicator
+// self-healing against any race conditions during Initialize (where a
+// single-shot setup occasionally fails to "stick" and the LCD corner
+// stayed blank until plugin disable/enable). iCUE itself re-uploads
+// templates around mode changes (see knob_change.pcapng frames 75-93).
+// Old firmware (<2.7) silently drops all conn=0x04 writes — try/catch
+// keeps the call harmless there.
+function updateLcdIndicator(mode) {
+    try {
+        device.log(`LCD update for ${mode.name}: step 1/4 open conn=0x04`);
+        sendAndRead([0x00, 0x00, 0x01, 0x04, 0x12, 0x00, 0x00, 0x00, 0x00]);
+        device.pause(20);
+        device.log("LCD: step 2/4 upload 537 B template");
+        sendAndRead([0x00, 0x00, 0x01, 0x04, 0x06, 0x01, 0x19, 0x02, 0x00, 0x00]
+            .concat(_hexToBytes(LCD_TEMPLATE_537_HEX)));
+        device.pause(20);
+        device.log("LCD: step 3/4 upload 413 B template");
+        sendAndRead([0x00, 0x00, 0x01, 0x04, 0x06, 0x00, 0x9d, 0x01, 0x00, 0x00]
+            .concat(_hexToBytes(LCD_TEMPLATE_413_HEX)));
+        device.pause(20);
+        device.log(`LCD: step 4/4 select icon 0x${mode.lcdValue.toString(16)}`);
+        sendAndRead([0x00, 0x00, 0x01, 0x04, 0x01, 0x15, 0x01, mode.lcdValue, 0x00]);
+        device.log("LCD update complete");
+    } catch (e) {
+        device.log(`LCD update FAILED: ${e}`);
+    }
+}
+
+// Knob modes. Each mode maps a firmware XX byte (drives the LCD label on
+// the keyboard) to a JS action fired on knob turn / push. XX values and
+// labels are user-verified by cycling (keyboard_functions.pcapng). Volume
+// is intentionally first — hardcoded as always-enabled (see
+// isKnobModeEnabled) so it can never disappear from the cycle.
+//
+// lcdValue is the setProperty(0x0115) value on conn=0x04 that tells FW
+// 2.7+ which pre-stored LCD icon/label to display in the top-right corner.
 const KNOB_MODES = Object.freeze([
     {
         name: "Volume",
         uiKey: "knobModeVolume",
         firmwareXX: 0x42,
+        lcdValue: 0x0d,
         action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xAF : 0xAE),
         pushAction: () => hidRepeat(1, 0xAD), // Mute toggle
     },
@@ -128,6 +190,7 @@ const KNOB_MODES = Object.freeze([
         name: "Media",
         uiKey: "knobModeMedia",
         firmwareXX: 0x41,
+        lcdValue: 0x08,
         // Vanguard Pro 96 emits knob-push as bitIdx 129 (empirically
         // confirmed via diagnostic log, NOT the upstream Bragi 137).
         action: (delta) => hidRepeat(Math.abs(delta), delta > 0 ? 0xB0 : 0xB1),
@@ -137,6 +200,7 @@ const KNOB_MODES = Object.freeze([
         name: "Vertical Scroll",
         uiKey: "knobModeVerticalScroll",
         firmwareXX: 0x3d,
+        lcdValue: 0x04,
         // No `mouse` global in a keyboard plugin → fall back to Page Up /
         // Page Down (0x21 = VK_PRIOR, 0x22 = VK_NEXT). Works in browsers,
         // PDF viewers, editors, scrollable lists.
@@ -172,7 +236,7 @@ function getKnobMode() {
 // without that, writeEndpoint races the handle-open and the FW silently
 // drops the write.
 function writeKnobMode(mode) {
-    device.log(`Setting Knob Mode: ${mode.name} (firmware XX=0x${mode.firmwareXX.toString(16)})`);
+    device.log(`Setting Knob Mode: ${mode.name} (firmware XX=0x${mode.firmwareXX.toString(16)}, lcd=0x${mode.lcdValue.toString(16)})`);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x0d, 0x02, 0x3e]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x09, 0x02, 0x00]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x06, 0x02,
@@ -182,6 +246,9 @@ function writeKnobMode(mode) {
         mode.firmwareXX,
         0x00, 0x00]);
     sendAndRead([0x00, 0x00, 0x01, 0x02, 0x05, 0x01, 0x02]);
+
+    // LCD corner-indicator (FW 2.7+): full channel+templates+select cycle.
+    updateLcdIndicator(mode);
 }
 
 function cycleFnMode() {
@@ -697,12 +764,36 @@ export function Initialize() {
 	// Apply debounce time — not GM-gated, just push the saved value.
 	writeDebounceTime();
 
+	// Enable the LCD corner-indicator subsystem (FW 2.7+). iCUE writes this
+	// EXACTLY ONCE during its init with value 0x07 (the Lupe / magnifying
+	// glass icon) — the value here doubles as the INITIAL icon displayed.
+	// We use the lcdValue of our default knob mode (Volume = 0x0d) so the
+	// LCD starts on Volume directly instead of stuck on Lupe. Subsequent
+	// conn=0x04 setProperty writes from updateLcdIndicator switch between
+	// modes during runtime. Old firmware silently drops this.
+	const _initialLcdMode = getEnabledKnobModes()[0];
+	try {
+		device.log(`LCD subsystem enable: setProperty(0x0115)=0x${_initialLcdMode.lcdValue.toString(16)} on conn=0x02 (initial icon = ${_initialLcdMode.name})`);
+		sendAndRead([0x00, 0x00, 0x01, 0x02, 0x01, 0x15, 0x01, _initialLcdMode.lcdValue, 0x00]);
+	} catch (e) {
+		device.log(`LCD enable write failed (old firmware?): ${e}`);
+	}
+
 	// Knob auf definierten Start-State: enabled[0] = Volume (siehe
 	// getEnabledKnobModes — Volume ist hardcoded immer aktiv und steht in
 	// KNOB_MODES an Position 0). Ohne diesen Write bliebe der Knob auf
 	// was-auch-immer-er-vorher-war (iCUE-Setting, vorherige Session, etc.).
 	knobModeIdx = 0;
 	writeKnobMode(getEnabledKnobModes()[0]);
+
+	// Schedule LCD-indicator retry refreshes — firmware sometimes accepts
+	// the immediate updateLcdIndicator call in writeKnobMode above but the
+	// LCD subsystem hasn't fully come up yet, leaving the corner stuck on
+	// the Lupe (0x07 default). Render() will re-fire updateLcdIndicator at
+	// each deadline below until the icon takes (subsequent fires are
+	// harmless no-ops once the LCD is correctly showing the active mode).
+	const _now = Date.now();
+	_lcdRefreshDeadlines = [_now + 500, _now + 1500, _now + 3000];
 
 	// NOTE: do NOT call refreshKeyboardLighting() here — setSize is async,
 	// so the canvas isn't yet at [22,6] at this point and device.color()
@@ -720,6 +811,13 @@ function sendAndRead(packet) {
 let subdevicesEditedLastFrame = false;
 let _lastGameModeSyncAt = 0;
 const GAME_MODE_SYNC_INTERVAL_MS = 3000;
+
+// Deferred LCD-indicator refresh deadlines. Initialize() seeds these so the
+// first Render ticks re-fire updateLcdIndicator after the firmware has had
+// time to fully settle the conn=0x02 LCD-enable. Without retries, init
+// occasionally races and the LCD gets stuck on the default Lupe icon (0x07)
+// even though our write to switch to Volume (0x0d) was sent.
+let _lcdRefreshDeadlines = [];
 
 export function Render() {
 	// Polling-Rate-Wechsel löst USB-Re-Enumeration aus (~5s). In dieser
@@ -743,6 +841,14 @@ export function Render() {
 	// even when nothing to close).
 	if (typeof pauseForWebHub !== "undefined" && pauseForWebHub) {
 		return;
+	}
+
+	// Deferred LCD-indicator refresh: re-fire updateLcdIndicator a few times
+	// after Initialize so a racy first attempt doesn't leave the LCD stuck
+	// on the default Lupe icon. Each deadline fires at most once.
+	if (_lcdRefreshDeadlines.length > 0 && Date.now() >= _lcdRefreshDeadlines[0]) {
+		_lcdRefreshDeadlines.shift();
+		updateLcdIndicator(getKnobMode());
 	}
 
 	readDeviceNotifications();
